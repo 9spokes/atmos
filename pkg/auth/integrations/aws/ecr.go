@@ -32,7 +32,7 @@ var ecrDockerConfigFactory = func() (*docker.ConfigManager, error) {
 type ECRIntegration struct {
 	name     string
 	identity string
-	registry *schema.ECRRegistry
+	registry *schema.Registry
 }
 
 // NewECRIntegration creates an ECR integration from config.
@@ -50,7 +50,7 @@ func NewECRIntegration(config *integrations.IntegrationConfig) (integrations.Int
 	}
 
 	// Extract registry from spec.registry - required for aws/ecr integrations.
-	var registry *schema.ECRRegistry
+	var registry *schema.Registry
 	if config.Config.Spec != nil && config.Config.Spec.Registry != nil {
 		registry = config.Config.Spec.Registry
 	}
@@ -91,14 +91,11 @@ func (e *ECRIntegration) Execute(ctx context.Context, creds types.ICredentials) 
 
 	log.Debug("Logging in to ECR registry", "account_id", e.registry.AccountID, "region", e.registry.Region)
 
-	// Get authorization token from ECR.
-	result, err := ecrGetAuthToken(ctx, creds, e.registry.AccountID, e.registry.Region)
+	result, err := e.ExchangeCredentials(ctx, creds)
 	if err != nil {
-		return fmt.Errorf("%w: failed to get ECR token for %s: %w", errUtils.ErrECRAuthFailed, e.registry.AccountID, err)
+		return err
 	}
-
-	// Build registry URL.
-	registryURL := awsCloud.BuildRegistryURL(e.registry.AccountID, e.registry.Region)
+	registryURL := result.Registry
 
 	// Write credentials to Docker config.
 	if err := dockerConfig.WriteAuth(registryURL, result.Username, result.Password); err != nil {
@@ -106,11 +103,32 @@ func (e *ECRIntegration) Execute(ctx context.Context, creds types.ICredentials) 
 	}
 
 	// Log success with actual expiration time.
-	expiresIn := time.Until(result.ExpiresAt).Round(time.Minute)
-	ui.Success(fmt.Sprintf("ECR login: %s (expires in %s)", registryURL, expiresIn))
-	log.Debug("ECR login successful", "registry", registryURL, "expires_at", result.ExpiresAt)
+	message := fmt.Sprintf("ECR login: %s", registryURL)
+	if result.Expiration != nil {
+		message += fmt.Sprintf(" (expires in %s)", time.Until(*result.Expiration).Round(time.Minute))
+	}
+	ui.Success(message)
+	log.Debug("ECR login successful", "registry", registryURL, "expires_at", result.Expiration)
 
 	return nil
+}
+
+// ExchangeCredentials mints credentials for this configured ECR registry without writing Docker state.
+func (e *ECRIntegration) ExchangeCredentials(ctx context.Context, creds types.ICredentials) (*types.OCICredentials, error) {
+	defer perf.Track(nil, "aws.ECRIntegration.ExchangeCredentials")()
+
+	result, err := ecrGetAuthToken(ctx, creds, e.registry.AccountID, e.registry.Region)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to get ECR token for %s: %w", errUtils.ErrECRAuthFailed, e.registry.AccountID, err)
+	}
+	if result == nil {
+		return nil, errUtils.ErrIdentityCredentialsNone
+	}
+	credentials := &types.OCICredentials{Registry: awsCloud.BuildRegistryURL(e.registry.AccountID, e.registry.Region), Username: result.Username, Password: result.Password}
+	if !result.ExpiresAt.IsZero() {
+		credentials.Expiration = &result.ExpiresAt
+	}
+	return credentials, nil
 }
 
 // Cleanup removes ECR Docker config entries for this integration's registry.
@@ -153,6 +171,6 @@ func (e *ECRIntegration) GetIdentity() string {
 }
 
 // GetRegistry returns the configured registry.
-func (e *ECRIntegration) GetRegistry() *schema.ECRRegistry {
+func (e *ECRIntegration) GetRegistry() *schema.Registry {
 	return e.registry
 }

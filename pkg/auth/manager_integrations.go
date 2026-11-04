@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 
 	errUtils "github.com/cloudposse/atmos/errors"
@@ -46,8 +47,32 @@ func integrationTargetKey(name string, cfg schema.Integration) string {
 		if cfg.Spec != nil && cfg.Spec.Cluster != nil {
 			return "aws/eks:" + cfg.Spec.Cluster.Name + ":" + cfg.Spec.Cluster.Region
 		}
+	case integrations.KindGCPGKE:
+		if cfg.Spec != nil && cfg.Spec.Cluster != nil {
+			return gkeIntegrationTargetKey(cfg)
+		}
 	}
 	return name
+}
+
+// gkeIntegrationTargetKey builds a cache key that includes GKE output behavior.
+func gkeIntegrationTargetKey(cfg schema.Integration) string {
+	cluster := cfg.Spec.Cluster
+	values := url.Values{
+		"alias":    {cluster.Alias},
+		"location": {cluster.Location},
+		"name":     {cluster.Name},
+		"project":  {cluster.ProjectID},
+	}
+	if cfg.Via != nil {
+		values.Set("identity", cfg.Via.Identity)
+	}
+	if cluster.Kubeconfig != nil {
+		values.Set("mode", cluster.Kubeconfig.Mode)
+		values.Set("path", cluster.Kubeconfig.Path)
+		values.Set("update", cluster.Kubeconfig.Update)
+	}
+	return integrations.KindGCPGKE + ":" + values.Encode()
 }
 
 // triggerIntegrations executes integrations that reference this identity with auto_provision enabled.
@@ -58,7 +83,7 @@ func (m *manager) triggerIntegrations(ctx context.Context, identityName string, 
 	defer perf.Track(nil, "auth.Manager.triggerIntegrations")()
 
 	// Check if integrations should be skipped (when called from ExecuteIntegration or eks-token).
-	if ctx.Value(skipIntegrationsKey) != nil {
+	if IntegrationsSkipped(ctx) {
 		log.Debug("Skipping auto-triggered integrations (explicit execution)", logKeyIdentity, identityName)
 		return
 	}
@@ -161,7 +186,7 @@ func (m *manager) EnsureIdentityEnvironment(ctx context.Context, identityName st
 		// Authenticate runs login-time integration triggers itself, so the returned whoami
 		// is not needed here (the cached path below uses it only to trigger integrations).
 		if _, err = m.Authenticate(ctx, identityName); err != nil {
-			return nil, fmt.Errorf(errUtils.ErrWrapWithNameAndCauseFormat, errUtils.ErrIdentityAuthFailed, identityName, err)
+			return nil, errUtils.WrapIdentityAuthFailed(identityName, err)
 		}
 	} else if whoami != nil && whoami.Credentials != nil {
 		// Valid cached session — provision auto_provision integrations using the cached
@@ -209,8 +234,14 @@ func (m *manager) executeIntegration(ctx context.Context, integrationName string
 // ExecuteIntegration exposes integration execution for the standalone ecr-login command.
 // This authenticates the integration's linked identity first, then executes the integration.
 // Auto-triggered integrations are skipped during authentication to avoid duplicate execution.
-func (m *manager) ExecuteIntegration(ctx context.Context, integrationName string) error {
+func (m *manager) ExecuteIntegration(ctx context.Context, integrationName string, opts ...types.IntegrationOption) error {
 	defer perf.Track(nil, "auth.Manager.ExecuteIntegration")()
+
+	// Collect per-invocation CLI overrides (e.g. --kubeconfig/--alias).
+	var overrides types.IntegrationOverrides
+	for _, opt := range opts {
+		opt(&overrides)
+	}
 
 	// Look up integration config.
 	if m.config.Integrations == nil {
@@ -234,7 +265,7 @@ func (m *manager) ExecuteIntegration(ctx context.Context, integrationName string
 	ctxSkipIntegrations := context.WithValue(ctx, skipIntegrationsKey, true)
 	whoami, err := m.Authenticate(ctxSkipIntegrations, identityName)
 	if err != nil {
-		return fmt.Errorf(errUtils.ErrWrapWithNameAndCauseFormat, errUtils.ErrIdentityAuthFailed, identityName, err)
+		return errUtils.WrapIdentityAuthFailed(identityName, err)
 	}
 
 	// Use credentials from authentication result.
@@ -244,10 +275,11 @@ func (m *manager) ExecuteIntegration(ctx context.Context, integrationName string
 
 	log.Debug("Authenticated identity for integration", "identity", identityName, "whoami", whoami.Identity)
 
-	// Create and execute the integration.
+	// Create and execute the integration. CLI overrides are applied to a copy of
+	// the config so the shared integration config in m.config is never mutated.
 	integration, err := integrations.Create(&integrations.IntegrationConfig{
 		Name:   integrationName,
-		Config: &integrationConfig,
+		Config: applyIntegrationOverrides(integrationConfig, overrides),
 		Realm:  m.realm.Value,
 	})
 	if err != nil {
@@ -255,6 +287,46 @@ func (m *manager) ExecuteIntegration(ctx context.Context, integrationName string
 	}
 
 	return integration.Execute(ctx, whoami.Credentials)
+}
+
+// applyIntegrationOverrides returns an integration config with any non-empty CLI
+// overrides applied to its cluster settings. The input is passed by value, but
+// its Spec and Cluster are pointers shared with m.config, so the branch we touch
+// is cloned before mutation - the caller's stored config is never changed.
+// Overrides only apply to cluster integrations (aws/eks, azure/aks, gcp/gke);
+// for any other kind, or when no overrides are set, the config is returned as-is.
+func applyIntegrationOverrides(config schema.Integration, overrides types.IntegrationOverrides) *schema.Integration {
+	defer perf.Track(nil, "auth.applyIntegrationOverrides")()
+
+	if overrides.KubeconfigPath == "" && overrides.Alias == "" {
+		return &config
+	}
+	if config.Spec == nil || config.Spec.Cluster == nil {
+		return &config
+	}
+
+	// Clone Spec and Cluster so the shared pointers in m.config stay untouched.
+	specCopy := *config.Spec
+	clusterCopy := *config.Spec.Cluster
+
+	if overrides.Alias != "" {
+		clusterCopy.Alias = overrides.Alias
+	}
+
+	if overrides.KubeconfigPath != "" {
+		// Clone the (optional) kubeconfig settings so mode/update are preserved
+		// while only the path is overridden.
+		kubeconfigCopy := schema.KubeconfigSettings{}
+		if clusterCopy.Kubeconfig != nil {
+			kubeconfigCopy = *clusterCopy.Kubeconfig
+		}
+		kubeconfigCopy.Path = overrides.KubeconfigPath
+		clusterCopy.Kubeconfig = &kubeconfigCopy
+	}
+
+	specCopy.Cluster = &clusterCopy
+	config.Spec = &specCopy
+	return &config
 }
 
 // ExecuteIdentityIntegrations executes all integrations that reference this identity.
@@ -281,7 +353,7 @@ func (m *manager) ExecuteIdentityIntegrations(ctx context.Context, identityName 
 	ctxSkipIntegrations := context.WithValue(ctx, skipIntegrationsKey, true)
 	whoami, err := m.Authenticate(ctxSkipIntegrations, identityName)
 	if err != nil {
-		return fmt.Errorf(errUtils.ErrWrapWithNameAndCauseFormat, errUtils.ErrIdentityAuthFailed, identityName, err)
+		return errUtils.WrapIdentityAuthFailed(identityName, err)
 	}
 
 	// Use credentials from authentication result.

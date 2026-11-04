@@ -3,11 +3,14 @@ package credentials
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zalando/go-keyring"
 
 	"github.com/cloudposse/atmos/pkg/auth/types"
@@ -155,6 +158,8 @@ func TestDelete_Flow(t *testing.T) {
 }
 
 func TestList_NotSupported(t *testing.T) {
+	// The system keyring cannot enumerate entries; the OS keychain is mocked by TestMain.
+	t.Setenv("ATMOS_KEYRING_TYPE", "system")
 	s := NewCredentialStore()
 	_, err := s.List("")
 	assert.Error(t, err)
@@ -287,6 +292,19 @@ func TestNewCredentialStoreWithConfig_NoopFallback(t *testing.T) {
 	}
 }
 
+// TestNewCredentialStoreWithConfig_UnknownKeyringTypeFallsBackToSystem covers
+// the switch's default branch: an unrecognized keyring type (neither
+// "memory", "file", nor "system") logs a warning and falls back to the
+// system keyring rather than failing outright.
+func TestNewCredentialStoreWithConfig_UnknownKeyringTypeFallsBackToSystem(t *testing.T) {
+	t.Setenv("ATMOS_KEYRING_TYPE", "totally-bogus-type")
+
+	store := NewCredentialStoreWithConfig(nil)
+
+	assert.NotNil(t, store)
+	assert.Equal(t, types.CredentialStoreTypeSystemKeyring, store.Type())
+}
+
 // TestNewKeyringAuthStore tests the deprecated backward-compatible function.
 func TestNewKeyringAuthStore(t *testing.T) {
 	store := NewKeyringAuthStore()
@@ -408,4 +426,36 @@ func TestSystemKeyringStore_SetAny(t *testing.T) {
 			keyring.Delete(tc.key, KeyringUser)
 		})
 	}
+}
+
+func TestOpenPrivateKeyringUsesConfiguredBackend(t *testing.T) {
+	for _, backend := range []string{"memory", "file", "system"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Setenv("ATMOS_KEYRING_TYPE", backend)
+			t.Setenv("ATMOS_KEYRING_PASSWORD", "test-private-password")
+			t.Setenv("ATMOS_KEYRING_FILE_PATH", t.TempDir())
+			store, err := OpenKeyring(nil)
+			require.NoError(t, err)
+			require.Equal(t, backend, KeyringType(nil))
+			require.NoError(t, store.Set("private-session", "private-refresh-token"))
+			actual, err := store.Get("private-session")
+			require.NoError(t, err)
+			require.Equal(t, "private-refresh-token", actual)
+			require.NoError(t, store.Delete("private-session"))
+		})
+	}
+}
+
+func TestOpenPrivateKeyringFailsWithoutDurableBackend(t *testing.T) {
+	t.Setenv("ATMOS_KEYRING_TYPE", "noop")
+	store, err := OpenKeyring(nil)
+	require.ErrorIs(t, err, ErrCredentialStore)
+	require.Nil(t, store, "private sessions must never silently use noop storage")
+	t.Setenv("ATMOS_KEYRING_TYPE", "file")
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(blocked, []byte("existing"), 0o600))
+	t.Setenv("ATMOS_KEYRING_FILE_PATH", blocked)
+	store, err = OpenKeyring(nil)
+	require.ErrorIs(t, err, ErrCredentialStore)
+	require.Nil(t, store, "a failed configured backend must not fall back to memory")
 }

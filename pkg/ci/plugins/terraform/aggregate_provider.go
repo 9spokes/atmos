@@ -1,7 +1,6 @@
 package terraform
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -149,6 +148,42 @@ func (p *Plugin) aggregateComponentContext(ctx *plugin.HookContext, component *t
 	}
 }
 
+// createAggregateCheckRuns creates one real pending check-run per resolved
+// component. Before-side counterpart to updateAggregateCheckRuns.
+func (p *Plugin) createAggregateCheckRuns(ctx *plugin.HookContext, nodes []schema.TerraformPlanCIPendingNode) {
+	for i := range nodes {
+		componentCtx := p.pendingComponentContext(ctx, &nodes[i])
+		if err := p.createCheckRun(componentCtx); err != nil {
+			logCheckRunError("CI aggregate check run creation skipped", err)
+		}
+	}
+}
+
+// pendingComponentContext builds a component-scoped hook context from a
+// resolved-but-not-yet-run graph node.
+func (p *Plugin) pendingComponentContext(ctx *plugin.HookContext, node *schema.TerraformPlanCIPendingNode) *plugin.HookContext {
+	info := schema.ConfigAndStacksInfo{}
+	if ctx.Info != nil {
+		info = *ctx.Info
+	}
+	info.Stack = node.Stack
+	info.StackFromArg = node.Stack
+	info.Component = node.Component
+	info.ComponentFromArg = node.Component
+
+	return &plugin.HookContext{
+		Event:               ctx.Event,
+		Command:             ctx.Command,
+		EventPrefix:         ctx.EventPrefix,
+		Config:              ctx.Config,
+		Info:                &info,
+		Provider:            ctx.Provider,
+		CICtx:               ctx.CICtx,
+		TemplateLoader:      ctx.TemplateLoader,
+		CreatePlanfileStore: ctx.CreatePlanfileStore,
+	}
+}
+
 // postAggregateComment creates or updates the aggregate PR comment through the CI provider.
 func (p *Plugin) postAggregateComment(ctx *plugin.HookContext, renderedSummary string) error {
 	if reason := shouldSkipComment(ctx, renderedSummary); reason != "" {
@@ -162,17 +197,7 @@ func (p *Plugin) postAggregateComment(ctx *plugin.HookContext, renderedSummary s
 	}
 
 	stack := aggregateStackValue(ctx.Info)
-	marker := buildAggregateCommentMarker(ctx.Command, stack)
-	opts := &provider.PostCommentOptions{
-		Owner:    ctx.CICtx.RepoOwner,
-		Repo:     ctx.CICtx.RepoName,
-		PRNumber: ctx.CICtx.PullRequest.Number,
-		Marker:   marker,
-		Body:     marker + "\n" + renderedSummary,
-		Behavior: behavior,
-	}
-
-	result, err := ctx.Provider.PostComment(context.Background(), opts)
+	result, err := postKeyedComment(ctx, buildAggregateCommentKey(ctx.Command, stack), renderedSummary, behavior)
 	if err != nil {
 		return err
 	}
@@ -180,10 +205,10 @@ func (p *Plugin) postAggregateComment(ctx *plugin.HookContext, renderedSummary s
 	return nil
 }
 
-// buildAggregateCommentMarker returns the stable marker for aggregate PR comments.
-func buildAggregateCommentMarker(command, stack string) string {
+// buildAggregateCommentKey returns the stable key for aggregate PR comments.
+func buildAggregateCommentKey(command, stack string) string {
 	if stack == "" {
 		stack = aggregateStackAll
 	}
-	return fmt.Sprintf("<!-- atmos:ci:%s:aggregate:%s -->", command, stack)
+	return fmt.Sprintf("aggregate:%s:%s", command, stack)
 }

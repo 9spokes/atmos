@@ -5,13 +5,13 @@ sidebar_class_name: command
 id: planfile
 ---
 import Intro from '@site/src/components/Intro'
-import Screengrab from '@site/src/components/Screengrab'
+import CastPlayer from '@site/src/components/CastPlayer'
 
 <Intro>
 Use this command to generate a Terraform planfile for an Atmos [component](/components) in a [stack](/stacks) and convert it to JSON or YAML format for review.
 </Intro>
 
-<Screengrab title="atmos terraform generate planfile --help" slug="atmos-terraform-generate-planfile--help" />
+<CastPlayer title="atmos terraform generate planfile --help" src="/casts/screengrabs/atmos-terraform-generate-planfile--help.cast" static chrome />
 
 ## Usage
 
@@ -23,7 +23,7 @@ atmos terraform generate planfile <component> -s <stack> [options]
 
 This command generates a Terraform planfile for a specified Atmos component in a stack.
 
-Under the hood, Atmos executes `terraform plan` to create a binary planfile, then uses `terraform show` to convert it into a human-readable format (YAML or JSON). This enables easy integration with other tooling like `checkov`.
+Under the hood, Atmos executes `terraform plan` to create a binary planfile, then uses `terraform show` to convert it into a human-readable format (YAML or JSON). This enables easy integration with other tooling like `checkov`. The binary plan used for conversion is temporary; any existing saved component plan remains available for `apply --from-plan`.
 
 :::tip
 Run `atmos terraform generate planfile --help` to see all the available options

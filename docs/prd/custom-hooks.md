@@ -1,10 +1,23 @@
 # Custom Hooks
 
-**Status**: 🟡 In Progress (kind system, scanner kinds, `--skip-hooks`, dependency auto-install, and workdir compatibility have shipped on the in-flight PR; Pro upload backend still pending — see Implementation Plan below)
+**Status**: Shipped (core). Atmos ships the kind system, the scanner kinds (`infracost`, `trivy`, `checkov`, `kics`), the generic `command` kind, `--skip-hooks`, dependency auto-install, and workdir compatibility. Only the Atmos Pro upload backend remains outstanding — see Implementation Plan below. Core hook functionality is production-ready as of 2026-07-24.
 
-**Last Updated**: 2026-05-22
+**Last Updated**: 2026-10-19
 
-**Related PRDs**: [Hooks Component Scoping](./hooks-component-scoping.md) | [Tool Dependencies Integration](./tool-dependencies-integration.md) | [Native CI Integration](./native-ci-integration.md) | [CI Summary Templates](./ci-summary-templates.md)
+**Related PRDs**: [Hooks Component Scoping](./hooks-component-scoping.md) | [Tool Dependencies Integration](./tool-dependencies-integration.md) | [Native CI Integration](./native-ci-integration.md) | [CI Summary Templates](./ci-summary-templates.md) | [Run custom step types as component lifecycle hooks](./hooks-step-types.md) (the `kind: step` bridge — new hook capabilities like [`type: archive`](./archive-step.md) ship as step types, not new hook kinds)
+
+## Automation integration
+
+The current kind registry also includes `step` and `steps`, which reuse registered
+step handlers. Embedded Starlark scripts receive component, hook, and operation
+context and can call the shared step library. See [hook step types](hooks-step-types.md)
+and [automation behavior](starlark-automation-and-command-testing.md).
+
+Local Git hooks (`git.hooks` in atmos.yaml) are a different host from component
+lifecycle hooks. They now accept their own inline step lists; see
+[Git-hook steps](git-hook-steps.md). The remaining sections describe the original
+scanner-kind design; they do not imply that generic scripting or HTTP steps are
+still missing.
 
 ## Overview
 
@@ -19,7 +32,7 @@ This is a **minor tweak** to today's hook architecture, not a new subsystem:
 
 ## Problem Statement
 
-Today's `pkg/hooks/` only supports one active kind: `store` (read Terraform outputs into a parameter store). Users who want to run security scanners, cost estimators, or compliance tools against their components currently have to:
+Before this feature, `pkg/hooks/` supported one active kind: `store` (read Terraform outputs into a parameter store). Users who want to run security scanners, cost estimators, or compliance tools against their components currently have to:
 
 1. **Wrap them in GitHub Actions** — Couples the integration to GitHub, duplicates CLI logic, requires bash glue scripts between steps. Doesn't run locally.
 2. **Wrap them in custom commands** — Works, but bypasses the hook lifecycle, doesn't tie into `before/after.terraform.*` events, and can't surface results in a unified Pro UI.
@@ -96,7 +109,51 @@ Two distinct interpolation surfaces:
 - `ATMOS_OUTPUT_DIR` — temp directory containing `ATMOS_OUTPUT_FILE` (for tools like KICS that write to a directory rather than a file)
 - `ATMOS_STACK`, `ATMOS_COMPONENT` — names
 
-Tools consume these directly (e.g. `infracost --path "$ATMOS_COMPONENT_PATH"`).
+Tools consume these directly (e.g. `infracost --path "$ATMOS_COMPONENT_PATH"`). `$ATMOS_COMPONENT_PATH` always reports `ComponentPath()`'s resolved path, whether or not that directory exists on disk — the path is resolved from the processed component metadata, so a stack-facing alias using `metadata.component` runs against its resolved local module (or provisioned workdir), not the alias name. The command-engine hook's own process working directory is a separate, more conservative decision: it uses that same resolved directory only when it actually exists on disk; otherwise the subprocess falls back to the ambient process working directory rather than refusing to start. This matters for a `when: always` after-hook that must still fire when the component was never provisioned — e.g. an early failure before Terraform ever reaches it (see `TestHelmfileRun_NodeHooksFallbackOnEarlyFailure`) — where hard-requiring the resolved directory to exist would silently prevent the hook from running at all.
+
+A `before.terraform.*` hook is a "run before Terraform" event, not a "run before the component's source is provisioned" event: when a component actually has hooks configured, `runUserHooks` provisions a JIT `source:` synchronously before firing any hook for that component, so both `$ATMOS_COMPONENT_PATH` and the hook's working directory resolve to a real, populated directory rather than one that would not exist until Terraform's own execution provisions it moments later. `before.terraform.init` is excluded from this pre-provisioning step — it is the source provisioner's own lifecycle event, and pre-provisioning ahead of it would fire it after the source already exists, inverting the one event whose entire point is to run before that. This pre-provisioning is best-effort: a failure here is only logged, not returned, since the Terraform command performs the same provisioning moments later and surfaces the authoritative error. When provisioning fails, the hook still runs — from the ambient working directory, per the fallback above — rather than being blocked by the very failure it might want to report on `when: always`.
+
+This pre-provisioning is scoped to components that have hooks: every terraform subcommand already provisions its own component independently in `RunE` (`ExecuteTerraform`), so triggering it unconditionally for every invocation — regardless of whether the component has hooks — raced a second, independent provisioning attempt against that one. For components with no hooks, that extra attempt had nothing to gain and nothing to synchronize against; observed effect was an intermittent failure to (re)populate the directory for subcommands with no hooks configured at all.
+
+Component/stack metadata resolution ahead of hook discovery (the `ProcessStacks` call in `prepareHookContext` that resolves `metadata.component`, described above) is similarly best-effort: on failure it logs and falls back to the unresolved component/stack rather than returning an error, so an objectively invalid stack or component (a scenario the command is going to reject anyway) is rejected by Terraform's own validation with its normal message, not by hook-context preparation with a different one.
+
+### `working_directory:` anchoring for step-backed hooks (`kind: step`/`kind: steps`)
+
+`kind: step`/`kind: steps` hooks (`pkg/hooks/step_engine.go`) bridge to the shared workflow/
+custom-command step registry (`pkg/runner/step`), and each step in that registry accepts its own
+`working_directory:`. Because hooks are always component-scoped — `ComponentPath(ctx)` (above) is
+always available — a relative `working_directory:` on a hook step follows the same
+Empty/Dot/Bare/Absolute value classification the
+[Base Path Resolution Semantics PRD](./base-path-resolution-semantics.md) defines for `base_path`,
+with **the component directory as a third possible anchor** alongside "config dir" and "CWD":
+
+| Value | Anchor |
+|---|---|
+| Empty (unset) | Component directory (`ComponentPath(ctx)`) |
+| Dot (`./foo`, `.`, `..`, `../foo`) | CWD — `exec.Cmd.Dir` already resolves a dot-prefixed relative `Dir` against the ambient process working directory, matching the "runtime source" convention the base-path PRD establishes for env vars/CLI flags |
+| Bare (`foo`, `foo/bar`) | Component directory — joined onto `ComponentPath(ctx)`, same anchor as the empty case |
+| Absolute | Passthrough, unchanged |
+
+```yaml
+hooks:
+  after-terraform-apply:
+    kind: step
+    type: shell
+    command: ./scripts/notify.sh    # dot-prefixed: runs from wherever `atmos` was invoked (CWD)
+    working_directory: scripts      # bare: runs from <component-dir>/scripts
+    # working_directory: ./scripts  # dot-prefixed: runs from <CWD>/scripts instead
+```
+
+Before this rule, a non-empty `working_directory:` — bare or dot-prefixed alike — fell straight
+through to `exec.Cmd`'s own default (relative to the ambient process CWD), silently identical
+regardless of prefix. That contradicted the *already-established* default for an **empty**
+`working_directory:` (component directory, per the table above) and meant `working_directory: foo`
+never actually ran inside the component the hook was scoped to. Implementation:
+`setDefaultStepWorkingDirectory`, `pkg/hooks/step_engine.go`.
+
+This anchoring is specific to hooks (`pkg/hooks`), not `pkg/runner/step` generally — a workflow or
+custom-command step's `working_directory:` has no component to anchor a bare value to, since
+workflows and custom commands aren't inherently component-scoped the way a hook is.
 
 ### Pro integration — implicit upload, kind-driven
 
@@ -433,3 +490,39 @@ Assertions:
 - [Native CI Integration](./native-ci-integration.md) — same philosophy: Atmos works identically locally and in CI; no wrapper scripts.
 - [CI Summary Templates](./ci-summary-templates.md) — summary envelope format borrows from CI plugin templates.
 - [Native CI Artifact Storage](./native-ci-artifact-storage.md) — `pkg/ci/artifact/` is the upload abstraction the Pro backend extends.
+- [Base Path Resolution Semantics](./base-path-resolution-semantics.md) — Empty/Dot/Bare/Absolute value classification, generalized here with the component directory as a third anchor for hook `working_directory:`.
+
+## Registered event validation and migration
+
+The `hooks.registered_events` behavior transition is dated **2026-10-19**.
+Unpinned configurations and pins on or after that date reject any declared hook
+event that is absent from the shared registry. Earlier pins preserve arbitrary
+strings and debug-only skips for unmatched events. The transition does not add
+a configuration toggle. Invalid edition pins remain errors.
+
+Validation runs before matching events, evaluating conditions, or honoring
+`--skip-hooks`, during stack processing and at hook execution entry points.
+Scaffold generation validates before prompting, creating directories, or running
+hooks, including dry runs. Stack creation forwards the effective project edition
+to its scaffold renderer and retains it for application. Stack cache keys include
+the edition so legacy validation cannot satisfy a strict-edition request.
+
+The dependency-light `pkg/hooks/events` package owns event constants, alias
+normalization, and the registry. Existing `pkg/hooks` names remain aliases for
+callers. Integrations register events before configuration loading; a custom
+command or an event declaration alone does not register an event. Raw stack
+validation visits hook-bearing scopes only, not similarly named application data
+inside vars/settings. The schema keeps string event items because old editions
+and integrations may use names outside the built-in set.
+
+Supported aliases and legacy hyphenated spellings remain valid. Empty lists
+still match every emitted event. Registered but unmatched events still skip.
+Helm's destroy command emits the delete events; Helmfile emits destroy events.
+No Terraform per-component destroy event is advertised: only its registered
+aggregate destroy events are accepted.
+
+Migration: correct misspellings and unsupported names using the hook reference.
+An exact pin of `edition: "2026-10-18"` temporarily retains legacy behavior;
+`"2026-10"` and `"2026"` include the transition due to end-of-period rounding.
+Tests cover boundary dates, unpinned behavior, invalid pins, aliases, extension
+registration, skipped/conditional hooks, dry runs, and no writes on failure.

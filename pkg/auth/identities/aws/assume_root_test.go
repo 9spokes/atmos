@@ -1061,7 +1061,7 @@ func TestAssumeRootIdentity_PrepareEnvironment(t *testing.T) {
 	assert.Equal(t, "us-west-2", result["AWS_DEFAULT_REGION"])
 }
 
-func TestAssumeRootIdentity_WithCustomResolver(t *testing.T) {
+func TestAssumeRootIdentity_WithCustomEndpoint(t *testing.T) {
 	config := &schema.Identity{
 		Kind: "aws/assume-root",
 		Via:  &schema.IdentityVia{Provider: "test-provider"},
@@ -1070,12 +1070,8 @@ func TestAssumeRootIdentity_WithCustomResolver(t *testing.T) {
 			"task_policy_arn":  "arn:aws:iam::aws:policy/root-task/IAMAuditRootUserCredentials",
 			"region":           "us-east-1",
 		},
-		Credentials: map[string]any{
-			"aws": map[string]any{
-				"resolver": map[string]any{
-					"url": "http://localhost:4566",
-				},
-			},
+		Spec: map[string]any{
+			"endpoint_url": "http://localhost:4566",
 		},
 	}
 
@@ -1087,12 +1083,10 @@ func TestAssumeRootIdentity_WithCustomResolver(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "test-root", ari.name)
 	assert.NotNil(t, ari.config)
-	assert.NotNil(t, ari.config.Credentials)
+	assert.NotNil(t, ari.config.Spec)
 
-	// Verify resolver config exists.
-	awsCreds, ok := ari.config.Credentials["aws"]
-	assert.True(t, ok)
-	assert.NotNil(t, awsCreds)
+	// Verify endpoint config exists.
+	assert.Equal(t, "http://localhost:4566", ari.config.Spec["endpoint_url"])
 }
 
 func TestAssumeRootIdentity_AllTaskPoliciesValidate(t *testing.T) {
@@ -1413,6 +1407,10 @@ func (m *mockAuthManager) Authenticate(_ context.Context, _ string) (*types.Whoa
 	return nil, nil
 }
 
+func (m *mockAuthManager) AuthenticateIsolated(context.Context, string) (*schema.AuthContext, error) {
+	return nil, nil
+}
+
 func (m *mockAuthManager) AuthenticateProvider(_ context.Context, _ string) (*types.WhoamiInfo, error) {
 	return nil, nil
 }
@@ -1489,7 +1487,7 @@ func (m *mockAuthManager) EnsureIdentityEnvironment(_ context.Context, _ string)
 	return nil, nil
 }
 
-func (m *mockAuthManager) ExecuteIntegration(_ context.Context, _ string) error {
+func (m *mockAuthManager) ExecuteIntegration(_ context.Context, _ string, _ ...types.IntegrationOption) error {
 	return nil
 }
 

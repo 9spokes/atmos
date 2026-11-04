@@ -2,10 +2,15 @@ package format
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/cloudposse/atmos/pkg/degradation"
+	"github.com/cloudposse/atmos/pkg/ui/theme"
 )
 
 func TestTryExpandScalarArray(t *testing.T) {
@@ -499,6 +504,152 @@ func TestCreateStyledTable(t *testing.T) {
 	}
 }
 
+func TestCreateStyledTableWithOptions(t *testing.T) {
+	result := CreateStyledTableWithOptions(
+		[]string{"Date", "Key", "Description"},
+		[][]string{{"2026-07-17", "settings.example.enabled", "A **formatted** description"}},
+		TableOptions{
+			SemanticCellStyling: false,
+			ColumnRoles:         []ColumnRole{ColumnRoleMuted, ColumnRoleIdentifier, ColumnRoleNone},
+		},
+	)
+
+	assert.Contains(t, result, "Date")
+	assert.Contains(t, result, "settings.example.enabled")
+	assert.Contains(t, result, "formatted")
+}
+
+func TestTableLayoutHelpersCoverConstrainedWidths(t *testing.T) {
+	natural := columnWidthParams{
+		numColumns:          3,
+		availableWidth:      100,
+		minWidths:           []int{10, 20, 40},
+		descriptionColIndex: 2,
+	}
+	assert.Equal(t, []int{10, 20, 40}, distributeWithDescriptionColumn(natural))
+	constrained := distributeWithDescriptionColumn(columnWidthParams{
+		numColumns:          3,
+		availableWidth:      55,
+		minWidths:           []int{10, 30, 80},
+		descriptionColIndex: 2,
+	})
+	assert.Equal(t, []int{10, 15, DescriptionColumnMinWidth}, constrained)
+
+	initial := allocateInitialWidths(columnWidthParams{
+		numColumns:          3,
+		minWidths:           []int{10, 35, 80},
+		descriptionColIndex: 2,
+	})
+	assert.Equal(t, []int{10, CompactColumnMaxWidth, DescriptionColumnMinWidth}, initial)
+	assert.Equal(t, 30, calculateUsedWidth([]int{10, 20, 30}, 2))
+	assert.Equal(t, DescriptionColumnMinWidth, calculateDescriptionWidth(20, 15))
+	assert.Equal(t, DescriptionColumnMinWidth, calculateDescriptionWidth(20, -20))
+	assert.Equal(t, MaxColumnWidth, calculateDescriptionWidth(200, 10))
+
+	shrunk := shrinkIfNeeded([]int{10, 30, 30}, 50, 2)
+	assert.Equal(t, []int{10, 10, 30}, shrunk, "the widest non-description column absorbs pressure first")
+
+	// Every shrinkable (non-description) column is already at MinColumnWidth,
+	// so no column can absorb the remaining excess: the loop must give up
+	// (break) rather than shrink a column below its floor or spin forever.
+	floored := shrinkIfNeeded([]int{MinColumnWidth, MinColumnWidth, 50}, 10, 2)
+	assert.Equal(t, []int{MinColumnWidth, MinColumnWidth, 50}, floored,
+		"columns already at the floor are left untouched when no column can absorb more excess")
+
+	slack := expandIntoSlack([]int{10, 10, 30}, columnWidthParams{
+		numColumns:          3,
+		availableWidth:      60,
+		minWidths:           []int{12, 20, 50},
+		descriptionColIndex: 2,
+	})
+	assert.Equal(t, []int{12, 18, 30}, slack, "slack first restores compact columns")
+	assert.Equal(t, []int{12, 20, 38}, expandIntoSlack([]int{12, 20, 30}, columnWidthParams{
+		numColumns:          3,
+		availableWidth:      70,
+		minWidths:           []int{12, 20, 50},
+		descriptionColIndex: 2,
+	}), "remaining slack belongs to the description column")
+
+	proportional := distributeProportionally(columnWidthParams{
+		numColumns:     2,
+		availableWidth: 20,
+		minWidths:      []int{20, 40},
+	})
+	assert.Equal(t, []int{6, 13}, proportional, "proportional allocation stays within the available width")
+}
+
+func TestStyledTableBoundsLongPathsAndDigests(t *testing.T) {
+	values := []string{
+		"/cache/plugins/" + strings.Repeat("abcdef0123456789/", 12) + "plugin",
+		"sha256:" + strings.Repeat("abcdef0123456789", 4),
+	}
+	for _, terminalWidth := range []int{40, 90, 120} {
+		t.Run(strconv.Itoa(terminalWidth), func(t *testing.T) {
+			t.Setenv("COLUMNS", strconv.Itoa(terminalWidth))
+			t.Setenv("ATMOS_CAST_RECORDING_WIDTH", "")
+			for _, value := range values {
+				rendered := CreateStyledTable([]string{"Field", "Value"}, [][]string{{"Locked version", value}})
+				for _, line := range strings.Split(rendered, "\n") {
+					assert.LessOrEqual(t, ansi.StringWidth(line), terminalWidth,
+						"table line exceeds terminal width: %q", ansi.Strip(line))
+				}
+				joined := strings.Join(strings.Fields(ansi.Strip(rendered)), "")
+				assert.Contains(t, joined, value, "wrapping must preserve the complete path or digest")
+				assert.Contains(t, ansi.Strip(rendered), "Locked version", "short field labels must remain readable")
+			}
+		})
+	}
+}
+
+func TestProportionalWidthsRespectBudgetAndPreserveFittingTables(t *testing.T) {
+	for _, widths := range [][]int{{5, 1000}, {1, 1, 1000}, {20, 40}} {
+		result := distributeProportionally(columnWidthParams{
+			numColumns: len(widths), availableWidth: 20, minWidths: widths, descriptionColIndex: -1,
+		})
+		total := 0
+		for _, width := range result {
+			total += width
+			assert.GreaterOrEqual(t, width, MinColumnWidth)
+		}
+		assert.LessOrEqual(t, total, 20, "minimum column widths must not overflow the budget")
+	}
+	assert.Equal(t, []int{10, 70}, distributeProportionally(columnWidthParams{
+		numColumns: 2, availableWidth: 100, minWidths: []int{10, 70}, descriptionColIndex: -1,
+	}), "a fitting column must not be capped or unnecessarily wrapped")
+}
+
+func TestTableRenderingHelpersCoverANSIWrappingAndRoles(t *testing.T) {
+	styled := "\x1b[31m  rendered value  \x1b[0m"
+	trimmed := trimANSISpace(styled)
+	assert.Equal(t, "rendered value", ansi.Strip(trimmed))
+	assert.Contains(t, trimmed, "\x1b[31m", "trimming preserves ANSI styling")
+
+	// No leading/trailing space: the fast path returns the input unchanged
+	// (not even ANSI-stripped/re-wrapped).
+	noPadding := "\x1b[31mrendered value\x1b[0m"
+	assert.Equal(t, noPadding, trimANSISpace(noPadding),
+		"no leading/trailing space must return the input unchanged")
+
+	assert.Equal(t, "abcd\nefgh", wrapCellToWidth("abcdefgh", 4))
+	assert.Equal(t, "short", wrapCellToWidth("short", 0))
+	assert.Equal(t, "one\ntwo", wrapCellToWidth("one\ntwo", 3))
+
+	styles := theme.GetCurrentStyles()
+	for _, role := range []ColumnRole{ColumnRoleMuted, ColumnRoleIdentifier, ColumnRoleAccent} {
+		foreground, ok := columnRoleForeground(role, styles)
+		assert.True(t, ok)
+		assert.NotNil(t, foreground)
+	}
+	for _, role := range []ColumnRole{ColumnRoleNone, ColumnRole(99)} {
+		foreground, ok := columnRoleForeground(role, styles)
+		assert.False(t, ok)
+		assert.Nil(t, foreground)
+	}
+
+	styleForCell := buildTableStyleFunc([][]string{{"true"}}, TableOptions{SemanticCellStyling: false})
+	assert.NotNil(t, styleForCell(0, 0))
+}
+
 // TestTableFormatterFormat tests the Format method.
 func TestTableFormatterFormat(t *testing.T) {
 	tests := []struct {
@@ -911,6 +1062,11 @@ func TestFormatTableCellValue(t *testing.T) {
 			input:    3.14159,
 			expected: "3.14",
 		},
+		{
+			name:     "AtmosComputedValue renders as (computed), not a JSON dump or struct summary",
+			input:    degradation.AtmosComputedValue{},
+			expected: "(computed)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -919,4 +1075,19 @@ func TestFormatTableCellValue(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// Explicit widths let stderr summaries and constrained viewports size independently of stdout.
+func TestTableExplicitWidth(t *testing.T) {
+	t.Setenv("COLUMNS", "20")
+	output := CreateStyledTableWithOptions([]string{"Field", "Value"}, [][]string{
+		{"description", "A complete description that wraps within the requested viewport"},
+	}, TableOptions{Width: 60})
+	widest := 0
+	for _, line := range strings.Split(output, "\n") {
+		widest = max(widest, ansi.StringWidth(line))
+	}
+	assert.Greater(t, widest, 20)
+	assert.LessOrEqual(t, widest, 60)
+	assert.Contains(t, ansi.Strip(output), "viewport")
 }

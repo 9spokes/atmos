@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	cfg "github.com/cloudposse/atmos/pkg/config"
+	fntag "github.com/cloudposse/atmos/pkg/function/tag"
 	"github.com/cloudposse/atmos/pkg/schema"
 	tfoutput "github.com/cloudposse/atmos/pkg/terraform/output"
 	u "github.com/cloudposse/atmos/pkg/utils"
@@ -144,6 +145,93 @@ func TestGetStringAfterTag_EdgeCases(t *testing.T) {
 	}
 }
 
+func TestMatchesTag(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		prefix   string
+		expected bool
+	}{
+		{
+			name:     "whitespace-delimited tag",
+			input:    "!template [\"one\"]",
+			prefix:   u.AtmosYamlFuncTemplate,
+			expected: true,
+		},
+		{
+			name:     "JSON array delimiter",
+			input:    "!template[\"one\",\"two\"]",
+			prefix:   u.AtmosYamlFuncTemplate,
+			expected: true,
+		},
+		{
+			name:     "JSON object delimiter",
+			input:    "!template{\"key\":\"value\"}",
+			prefix:   u.AtmosYamlFuncTemplate,
+			expected: true,
+		},
+		{
+			name:     "end-of-string tag",
+			input:    "!aws.account_id",
+			prefix:   u.AtmosYamlFuncAwsAccountID,
+			expected: true,
+		},
+		{
+			name:     "JSON delimiter applies to every YAML function",
+			input:    "!env[\"value\"]",
+			prefix:   u.AtmosYamlFuncEnv,
+			expected: true,
+		},
+		{
+			name:     "near-miss tag name",
+			input:    "!templateExtra value",
+			prefix:   u.AtmosYamlFuncTemplate,
+			expected: false,
+		},
+		{
+			name:     "unseparated primitive remains invalid",
+			input:    "!templatetrue",
+			prefix:   u.AtmosYamlFuncTemplate,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, matchesTag(tt.input, tt.prefix))
+		})
+	}
+}
+
+// The runtime delegates its tag boundary rule to pkg/function/tag, which atmos doctor uses to decide
+// whether an untagged string is a function call. Keep both views of the boundary rule identical.
+func TestMatchesTagDelegatesToFunctionTagPackage(t *testing.T) {
+	for _, input := range []string{"!template [\"one\"]", "!template[\"one\"]", "!templateExtra v", "!templatetrue", "!aws.account_id", "!env.x", "!env-x", "!env_x", "!env\tx", "!env"} {
+		for _, prefix := range fntag.AllYAML() {
+			assert.Equal(t, fntag.MatchesTag(input, prefix), matchesTag(input, prefix), "%q vs %q", input, prefix)
+		}
+	}
+}
+
+// Functions outside fntag.StringFormYAML are consumed from the YAML node tag, so the string processor
+// must leave a string that merely starts with them untouched. Doctor relies on this to call
+// such quoted strings plain text.
+func TestStringProcessorIgnoresFunctionsOutsideStringForm(t *testing.T) {
+	stringForm := map[string]bool{}
+	for _, tag := range fntag.StringFormYAML() {
+		stringForm[tag] = true
+	}
+	for _, tag := range fntag.AllYAML() {
+		if stringForm[tag] {
+			continue
+		}
+		input := tag + " argument"
+		got, err := processCustomTags(&schema.AtmosConfiguration{}, input, "", nil, nil)
+		assert.NoError(t, err, tag)
+		assert.Equal(t, input, got, "%s is not a string-form function and must be left as text", tag)
+	}
+}
+
 func TestSkipFunc(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -241,10 +329,8 @@ func TestProcessCustomYamlTags(t *testing.T) {
 		tfoutput.ResetOutputsCache()
 	})
 
-	if _, lookErr := exec.LookPath("tofu"); lookErr != nil {
-		if _, lookErr2 := exec.LookPath("terraform"); lookErr2 != nil {
-			t.Skip("skipping: neither 'tofu' nor 'terraform' binary found in PATH (required for !terraform.state integration test)")
-		}
+	if _, lookErr := exec.LookPath("terraform"); lookErr != nil {
+		t.Skip("skipping: 'terraform' binary not found in PATH (required for !terraform.state integration test)")
 	}
 	t.Setenv("ATMOS_CLI_CONFIG_PATH", "")
 	t.Setenv("ATMOS_BASE_PATH", "")
@@ -476,7 +562,7 @@ func TestProcessCustomYamlTagsStackInfoThreading(t *testing.T) {
 	// The real test: Verify that when we process nodes, the stackInfo
 	// is available for YAML function processing.
 	// This is a white-box test that ensures the parameter flows through.
-	processedNodes, err := processNodes(atmosConfig, input, "test-stack", nil, stackInfo)
+	processedNodes, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(input), "test-stack", nil, stackInfo)
 	assert.NoError(t, err)
 	assert.NotNil(t, processedNodes)
 }

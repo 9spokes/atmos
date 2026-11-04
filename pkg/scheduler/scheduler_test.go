@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// schedulerTestTimeout bounds deadlock detection, not scheduler performance.
+// Loaded CI runners can take more than a second to schedule the first worker.
+const schedulerTestTimeout = 10 * time.Second
 
 func TestRunExecutesLinearChainInDependencyOrder(t *testing.T) {
 	graph := testGraph(t, map[string][]string{
@@ -168,7 +173,7 @@ func TestRunExecutesFanInDAGOnlyAfterAllDependenciesComplete(t *testing.T) {
 	})
 
 	done := make(chan *AggregateResult, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), schedulerTestTimeout)
 	defer cancel()
 	go func() {
 		done <- New(graph, dispatcher, WithMaxConcurrency(4)).Run(ctx)
@@ -208,7 +213,7 @@ func TestRunUsesReadyQueueWithoutWaitingForUnrelatedRoot(t *testing.T) {
 	})
 
 	done := make(chan *AggregateResult, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), schedulerTestTimeout)
 	defer cancel()
 	go func() {
 		done <- New(graph, dispatcher, WithMaxConcurrency(2)).Run(ctx)
@@ -258,7 +263,7 @@ func TestRunBoundsConcurrentWorkers(t *testing.T) {
 	})
 
 	done := make(chan *AggregateResult, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), schedulerTestTimeout)
 	defer cancel()
 	go func() {
 		done <- New(graph, dispatcher, WithMaxConcurrency(2)).Run(ctx)
@@ -402,7 +407,7 @@ func TestRunFailFastLetsAlreadyRunningNodesDrain(t *testing.T) {
 	})
 
 	done := make(chan *AggregateResult, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), schedulerTestTimeout)
 	defer cancel()
 	go func() {
 		done <- New(graph, dispatcher, WithMaxConcurrency(2), WithFailFast(true)).Run(ctx)
@@ -455,6 +460,19 @@ func TestRunPropagatesSkippedStatusToDependents(t *testing.T) {
 		require.ErrorIs(t, nodeResult.Err, skipErr)
 		require.ErrorIs(t, nodeResult.Err, errUtils.ErrNodeSkipped)
 	}
+}
+
+func TestAggregateErrorOmitsSkippedNodesWhenAComponentFails(t *testing.T) {
+	rootErr := errors.New("root component failed")
+	result := aggregateError([]Result{
+		{NodeID: "root", Status: StatusFailed, Err: rootErr},
+		{NodeID: "dependent-a", Status: StatusSkipped, Err: fmt.Errorf("%w: fail-fast after root failed", errUtils.ErrNodeSkipped)},
+		{NodeID: "dependent-b", Status: StatusSkipped, Err: fmt.Errorf("%w: fail-fast after root failed", errUtils.ErrNodeSkipped)},
+	})
+
+	require.ErrorIs(t, result, rootErr)
+	assert.NotErrorIs(t, result, errUtils.ErrNodeSkipped)
+	assert.NotContains(t, result.Error(), "fail-fast")
 }
 
 func TestRunValidatesInputs(t *testing.T) {
@@ -541,7 +559,7 @@ func testGraph(t *testing.T, deps map[string][]string) *dependency.Graph {
 func runWithTimeout(t *testing.T, scheduler *Scheduler) *AggregateResult {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), schedulerTestTimeout)
 	defer cancel()
 	return scheduler.Run(ctx)
 }
@@ -572,7 +590,7 @@ func waitForStartedSet(t *testing.T, started <-chan string, seen map[string]bool
 	if seen == nil {
 		seen = map[string]bool{}
 	}
-	deadline := time.After(time.Second)
+	deadline := time.After(schedulerTestTimeout)
 	for {
 		allSeen := true
 		for _, want := range wants {
@@ -599,7 +617,7 @@ func waitForAnyStart(t *testing.T, started <-chan string) {
 
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(schedulerTestTimeout):
 		t.Fatal("timed out waiting for node to start")
 	}
 }

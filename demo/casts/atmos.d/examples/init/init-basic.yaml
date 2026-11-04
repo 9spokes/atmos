@@ -1,0 +1,19 @@
+commands:
+  - name: casts generate examples init init-basic
+    description: Regenerate the Init example cast
+    env: !include cast-defaults.yaml .env.command
+    steps:
+      - type: shell
+        name: setup
+        command: atmos casts setup
+      - type: script
+        name: record
+        source: scripts/casts/init-basic.star
+  - name: casts validate examples init init-basic
+    description: Validate the Init example cast
+    steps:
+      - type: script
+        name: validate
+        env:
+          CAST_VALIDATE: 'true'
+        source: scripts/casts/init-basic.star

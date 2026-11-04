@@ -3,9 +3,7 @@ package markdown
 
 import (
 	"encoding/json"
-	"os"
 	"reflect"
-	"sync"
 	"unsafe"
 
 	"github.com/charmbracelet/glamour"
@@ -29,9 +27,6 @@ import (
 type CustomRenderer struct {
 	glamour *glamour.TermRenderer
 }
-
-// stdoutRedirectMu serializes stdout redirects during rendering to prevent races.
-var stdoutRedirectMu sync.Mutex
 
 // CustomRendererOption configures the CustomRenderer.
 type CustomRendererOption func(*customRendererConfig)
@@ -132,10 +127,8 @@ func buildGlamourOptions(cfg *customRendererConfig) ([]glamour.TermRendererOptio
 		glamour.WithEmoji(),
 	}
 
-	// Only apply custom styles when color output is enabled.
-	// Glamour with Ascii profile correctly strips ANSI codes when no styles are applied,
-	// but custom styles with Bold/Italic/Underline still produce ANSI sequences.
-	// Skip styles for Ascii profile to ensure clean plaintext output for NO_COLOR mode.
+	// Use an uncolored structural stylesheet for Ascii output. Omitting styles
+	// also removes list markers, so NO_COLOR still needs Markdown layout rules.
 	styleOpts, err := buildStyleOptions(cfg)
 	if err != nil {
 		return nil, err
@@ -150,11 +143,22 @@ func buildGlamourOptions(cfg *customRendererConfig) ([]glamour.TermRendererOptio
 }
 
 // buildStyleOptions returns glamour style options based on config.
-// Returns empty slice for Ascii profile (NO_COLOR mode) to avoid ANSI output.
+// Uses an uncolored stylesheet for Ascii profile (NO_COLOR mode).
 func buildStyleOptions(cfg *customRendererConfig) ([]glamour.TermRendererOption, error) {
-	// Skip styles for Ascii profile to ensure clean plaintext output.
+	// Add only list structure to the existing undecorated no-color rendering.
+	// The general ASCII preset also adds heading and quote markers, changing
+	// unrelated status messages, so retain only its list layout rules here.
 	if cfg.colorProfile == termenv.Ascii {
-		return nil, nil
+		layout := asciiStyleConfig()
+		styleBytes, err := json.Marshal(ansi.StyleConfig{
+			List:        layout.List,
+			Item:        layout.Item,
+			Enumeration: layout.Enumeration,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []glamour.TermRendererOption{glamour.WithStylesFromJSONBytes(styleBytes)}, nil
 	}
 
 	// Use custom styles if provided.
@@ -189,8 +193,28 @@ func extendGlamourWithCustomExtensions(renderer *glamour.TermRenderer) {
 	extensions.NewHighlightExtension().Extend(md)
 	// Add badge extension (converts [!BADGE text] to styled badges).
 	extensions.NewBadgeExtension().Extend(md)
-	// Add strict linkify (prevents foo/bar@1.0.0 from becoming mailto: links).
-	extensions.NewStrictLinkifyExtension().Extend(md)
+	// Keep auto-linked emails and package references as plain terminal text.
+	extensions.NewTerminalLinkifyExtension().Extend(md)
+}
+
+// ApplyStrictLinkify extends a bare glamour.TermRenderer (one created directly via
+// glamour.NewTermRenderer, not via NewCustomRenderer) with the strict linkify extension,
+// preventing package/tool references like foo/bar@1.0.0 or tool@1.0.0 from being
+// auto-linked as mailto: links by glamour's default GFM Linkify extension.
+// Email addresses also render once, without an added mailto: destination.
+//
+// This is exported for callers -- such as pkg/ui/formatter.go's renderMarkdown, which
+// renders short-lived content (e.g. command help/usage text) via a raw glamour renderer
+// for performance/simplicity -- that need this specific fix without opting into the full
+// custom syntax set (admonitions, muted text, badges, highlight) NewCustomRenderer adds.
+func ApplyStrictLinkify(renderer *glamour.TermRenderer) {
+	defer perf.Track(nil, "markdown.ApplyStrictLinkify")()
+
+	md := getGlamourGoldmark(renderer)
+	if md == nil {
+		return
+	}
+	extensions.NewTerminalLinkifyExtension().Extend(md)
 }
 
 // getGlamourGoldmark extracts the internal goldmark.Markdown from a glamour.TermRenderer.
@@ -207,30 +231,31 @@ func getGlamourGoldmark(renderer *glamour.TermRenderer) goldmark.Markdown {
 }
 
 // Render converts markdown content to ANSI styled text.
-// Stdout is temporarily suppressed during rendering to prevent glamour from printing
-// "Warning: unhandled element" messages when it encounters markdown elements it can't handle.
+//
+// Render deliberately does NOT redirect os.Stdout while glamour runs. An earlier
+// version swapped the process-global os.Stdout to /dev/null here (under a mutex
+// that only serialized other Render calls) to hide glamour's
+// `fmt.Println("Warning: unhandled element", ...)`. Reassigning os.Stdout is a
+// data race against every other goroutine that reads os.Stdout at the same
+// time (fmt.Println, pkg/io's dynamic writers, bubbletea, parallel stack
+// processing that logs), and `go test -race` flags it. The redirect is also
+// unnecessary: glamour only prints that warning for node kinds it registers but
+// never handles -- ast.KindString and the goldmark footnote kinds. Atmos's
+// stringNodeRenderer (extensions/linkify.go) overrides ast.KindString for every
+// renderer built here (goldmark registers higher-priority renderers last, so
+// priority 500 wins over glamour's 1000), and footnotes can never appear
+// because glamour enables only extension.GFM and extension.DefinitionList.
+// Every Atmos custom kind (Badge/Highlight/Admonition/Muted) has its own
+// renderer or is transformed into a kind glamour handles. See
+// TestCustomRendererWritesNothingToStdout, which guards this reasoning
+// against a future glamour upgrade.
 func (r *CustomRenderer) Render(content string) (string, error) {
-	// Suppress glamour warnings by temporarily redirecting stdout to /dev/null.
-	// Glamour's internal ANSI renderer prints "Warning: unhandled element" directly to stdout
-	// via fmt.Println when it encounters nodes it doesn't know how to handle.
-	// These warnings are not useful to users and can be confusing.
-	//
-	// The mutex serializes stdout redirects to prevent races when Render() is called
-	// concurrently or when other goroutines write to stdout during rendering.
-	stdoutRedirectMu.Lock()
-	defer stdoutRedirectMu.Unlock()
-
-	oldStdout := os.Stdout
-	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err == nil {
-		os.Stdout = devNull
-		defer func() {
-			os.Stdout = oldStdout
-			devNull.Close()
-		}()
+	content = StripFrontmatter(content)
+	rendered, err := r.glamour.Render(content)
+	if err != nil {
+		return rendered, err
 	}
-
-	return r.glamour.Render(content)
+	return FixListHangingIndent(rendered), nil
 }
 
 // Close is a no-op for compatibility with glamour.TermRenderer interface.

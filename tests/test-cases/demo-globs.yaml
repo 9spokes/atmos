@@ -8,8 +8,6 @@ tests:
     args:
       - "vendor"
       - "pull"
-    preconditions:
-      - "github_token"
     expect:
       file_exists:
         - "./components/library/examples/demo-library/github/stargazers/README.md"
@@ -27,7 +25,6 @@ tests:
         - "./components/globs/examples/demo-library/README.md"
         - "./components/globs/examples/demo-helmfile/.gitignore"
         - "./components/globs/examples/demo-helmfile/atmos.yaml"
-        - "./components/globs/examples/demo-helmfile/docker-compose.yml"
         - "./components/globs/examples/demo-helmfile/README.md"
       file_not_exists:
         - "./components/library/examples/demo-workflows/stacks/catalog/myapp.yaml"

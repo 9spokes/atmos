@@ -83,7 +83,6 @@ atmos describe affected [options]
 | `--format` | `json` | Output format (json, yaml) |
 | `--file` | -- | Write result to file |
 | `--stack` | -- | Filter by stack |
-| `--include-spacelift-admin-stacks` | `false` | Include Spacelift admin stacks |
 | `--include-dependents` | `false` | Include dependent components |
 | `--include-settings` | `false` | Include settings section |
 | `--exclude-locked` | `false` | Exclude locked components |
@@ -214,7 +213,7 @@ atmos list components [options]
 | `--abstract` | | `false` | Include abstract components |
 | `--enabled` | | -- | Filter by enabled status (true/false) |
 | `--locked` | | -- | Filter by locked status (true/false) |
-| `--format` | `-f` | `table` | Output format (table, json, yaml, csv, tsv, tree) |
+| `--format` | `-f` | `table` | Output format (table, json, yaml, csv, tsv) |
 | `--columns` | | -- | Custom column selection |
 | `--sort` | | -- | Sort specification |
 
@@ -275,7 +274,7 @@ atmos list workflows [options]
 | Flag | Alias | Default | Description |
 |------|-------|---------|-------------|
 | `--file` | | -- | Filter by workflow file |
-| `--format` | `-f` | `table` | Output format (table, json, yaml, csv, tsv, tree) |
+| `--format` | `-f` | `table` | Output format (table, json, yaml, csv, tsv) |
 | `--columns` | | -- | Custom column selection |
 | `--sort` | | -- | Sort specification |
 

@@ -4,6 +4,7 @@ description: "Ansible orchestration: playbook execution, variable passing, inven
 metadata:
   copyright: Copyright Cloud Posse, LLC 2026
   version: "1.0.0"
+  category: orchestrators
 ---
 
 # Atmos Ansible Orchestration
@@ -12,26 +13,25 @@ Atmos wraps the Ansible CLI to provide stack-aware orchestration of configuratio
 manually managing variables, inventory, and playbook paths for each Ansible component, Atmos resolves the full
 configuration from stack manifests and handles all of these concerns automatically.
 
-> **Note:** `atmos ansible playbook` is designed for interactive operator sessions where a human is present to
-> monitor output, respond to prompts, and approve changes. It is not suitable for headless CI/CD automation where
-> no interactive terminal is available. For automated pipelines, use a dedicated Ansible CI runner or invoke
-> `ansible-playbook` directly from a CI step with pre-exported credentials.
+`atmos ansible playbook` supports interactive sessions and unattended execution. For CI,
+supply authentication and secrets without prompts, for example with an explicit identity and
+`--vault-password-file`. Use `--step` or `--ask-vault-pass` when an operator can answer prompts.
 
 ## How Atmos Orchestrates Ansible
 
 When you run `atmos ansible playbook`, Atmos performs the following sequence:
 
 1. **Resolves stack configuration** -- Reads and deep-merges all stack manifests to produce the fully resolved
-   configuration for the target component in the target stack.
+    configuration for the target component in the target stack.
 2. **Generates a variables file** -- Writes a YAML file containing all `vars` defined for the component in the
-   stack, following the naming convention `<context>-<component>.ansible.vars.yaml`.
+    stack, following the naming convention `<context>-<component>.ansible.vars.yaml`.
 3. **Resolves the playbook** -- Determines the playbook to run from `--playbook` flag or
-   `settings.ansible.playbook` in the stack manifest.
+    `settings.ansible.playbook` in the stack manifest.
 4. **Resolves the inventory** -- Determines the inventory source from `--inventory` flag or
-   `settings.ansible.inventory` in the stack manifest.
+    `settings.ansible.inventory` in the stack manifest.
 5. **Sets environment variables** -- Applies all `env` settings from the stack manifest.
 6. **Executes `ansible-playbook`** -- Runs the playbook in the component directory, passing the generated
-   variables file via `--extra-vars @<varfile>` and any additional native flags.
+    variables file via `--extra-vars @<varfile>` and any additional native flags.
 7. **Cleans up** -- Removes the generated variables file after execution completes.
 
 This means a single command like `atmos ansible playbook webserver -s prod` replaces what would normally require
@@ -162,7 +162,8 @@ components:
         ansible:
           playbook: deploy.yml
           inventory: inventory/production
-        depends_on:
+      dependencies:
+        components:
           - component: webserver
 ```
 
@@ -426,7 +427,7 @@ components:
 Use `atmos describe component` to see the fully resolved configuration:
 
 ```shell
-atmos describe component hello-world -s dev --type ansible
+atmos describe component hello-world -s dev
 ```
 
 ### Dry Run
@@ -439,30 +440,35 @@ atmos ansible playbook webserver -s prod --dry-run
 
 ## Best Practices
 
-> **Interactive use only:** `atmos ansible playbook` is intended for interactive operator sessions, not
-> headless CI/CD automation. Ensure a human is present to monitor output and respond to any interactive
-> prompts. For fully automated pipelines, invoke `ansible-playbook` directly from a CI step.
+For unattended runs, provide required credentials and secret inputs without prompts. Interactive
+options such as `--step` and `--ask-vault-pass` require an operator.
 
 1. **Use stack manifest settings for playbook configuration.** Define `settings.ansible.playbook` and
-   `settings.ansible.inventory` rather than passing flags every time.
+    `settings.ansible.inventory` rather than passing flags every time.
 
 2. **Centralize defaults in catalog files.** Define common settings in catalog defaults and override only
-   what differs per environment.
+    what differs per environment.
 
-3. **Use `depends_on` for ordering.** Define dependencies when playbooks need to run after infrastructure
-   is provisioned (e.g., after Terraform components).
+3. **Use `dependencies.components` for ordering.** Define dependencies when playbooks need to run
+    after infrastructure is provisioned, such as after Terraform components.
 
 4. **Keep playbooks focused.** Create small, task-specific playbooks rather than monolithic automation.
 
 5. **Use `env` for Ansible configuration.** Configure Ansible behavior through environment variables
-   rather than `ansible.cfg` for consistency across environments.
+    rather than `ansible.cfg` for consistency across environments.
 
 6. **Leverage inheritance.** Use abstract components and inheritance for shared playbook configurations
-   across environments.
+    across environments.
 
 7. **Use `--dry-run` before production runs.** Preview the commands Atmos will execute before running
-   against production infrastructure.
+    against production infrastructure.
 
 ## Additional Resources
 
 - For the complete command reference, see [references/commands-reference.md](references/commands-reference.md)
+
+### Per-invocation executable
+
+Use `--command=<executable>` to override the configured component executable for one invocation.
+The value is a name or path, not a shell command. Pass native arguments after `--`.
+`--ansible-command` is a compatibility alias; do not combine the two flags.

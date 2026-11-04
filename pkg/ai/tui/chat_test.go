@@ -9,13 +9,17 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/cloudposse/atmos/pkg/ai/agent/anthropic"
+	"github.com/cloudposse/atmos/pkg/ai/agent/grok"
 	"github.com/cloudposse/atmos/pkg/ai/session"
 	"github.com/cloudposse/atmos/pkg/ai/tools"
 	"github.com/cloudposse/atmos/pkg/ai/types"
 	"github.com/cloudposse/atmos/pkg/schema"
+	"github.com/cloudposse/atmos/pkg/ui/theme"
 )
 
 // mockAIClient is a mock implementation of ai.Client for testing.
@@ -113,6 +117,31 @@ func TestNewChatModel(t *testing.T) {
 		assert.Nil(t, model)
 		assert.Contains(t, err.Error(), "AI client cannot be nil")
 	})
+}
+
+func TestInitTextarea_Theming(t *testing.T) {
+	ta := initTextarea()
+
+	// The library's default CursorLine background produces a fully-inverted placeholder
+	// block; it must stay cleared so the placeholder renders as plain text.
+	assert.Equal(t, lipgloss.NewStyle(), ta.FocusedStyle.CursorLine)
+	assert.Equal(t, lipgloss.NewStyle(), ta.BlurredStyle.CursorLine)
+
+	// No per-line prompt glyph: the box's own border frames it instead.
+	assert.Empty(t, ta.Prompt)
+
+	// The box must actually be bordered, not just have a colored prompt character.
+	borderColor := lipgloss.Color(theme.GetBorderColor())
+	assert.True(t, ta.FocusedStyle.Base.GetBorderTop())
+	assert.Equal(t, borderColor, ta.FocusedStyle.Base.GetBorderTopForeground())
+	assert.True(t, ta.BlurredStyle.Base.GetBorderTop())
+}
+
+func TestNewCreateSessionForm_Theming(t *testing.T) {
+	form := newCreateSessionForm()
+
+	borderColor := lipgloss.Color(theme.GetBorderColor())
+	assert.Equal(t, borderColor, form.nameInput.PromptStyle.GetForeground())
 }
 
 func TestChatModel_Init(t *testing.T) {
@@ -644,6 +673,22 @@ func TestChatModel_AddMessage(t *testing.T) {
 		assert.Equal(t, roleSystem, lastMsg.Role)
 		assert.Equal(t, "System notification", lastMsg.Content)
 	})
+
+	t.Run("assistant message is tagged with the real provider even without a session", func(t *testing.T) {
+		// Session persistence (ai.sessions.enabled) is opt-in and off by default, so this
+		// is the common case: model.sess is nil, but the message must still be tagged with
+		// the real provider, not "" — otherwise the transcript header displays "unknown".
+		noSessionModel, err := NewChatModel(ChatModelParams{Client: client})
+		require.NoError(t, err)
+		noSessionModel.atmosConfig = &schema.AtmosConfiguration{}
+		noSessionModel.atmosConfig.AI.DefaultProvider = "anthropic"
+
+		noSessionModel.addMessage(roleAssistant, "Hi there")
+
+		lastMsg := noSessionModel.messages[len(noSessionModel.messages)-1]
+		assert.Equal(t, "anthropic", lastMsg.Provider)
+		assert.NotContains(t, noSessionModel.buildAssistantPrefix(lastMsg), "unknown")
+	})
 }
 
 func TestChatModel_MessageHandling(t *testing.T) {
@@ -1111,6 +1156,31 @@ func TestGetConfiguredProvidersForCreate(t *testing.T) {
 		assert.Equal(t, "openai", providers[1].Name)
 		assert.Equal(t, "OpenAI (GPT)", providers[1].DisplayName)
 		assert.Equal(t, "gpt-4-turbo", providers[1].Model) // From atmos.yaml
+	})
+
+	t.Run("uses the provider default when a configured provider omits model", func(t *testing.T) {
+		model := &ChatModel{
+			atmosConfig: &schema.AtmosConfiguration{
+				AI: schema.AISettings{
+					Providers: map[string]*schema.AIProviderConfig{
+						"anthropic": {},
+						"grok":      nil,
+					},
+				},
+			},
+		}
+
+		providers := model.getConfiguredProvidersForCreate()
+
+		assert.Len(t, providers, 2)
+		assert.Equal(t, anthropic.DefaultModel, providers[0].Model)
+		assert.Equal(t, grok.DefaultModel, providers[1].Model)
+	})
+
+	t.Run("default providers use each provider's DefaultModel", func(t *testing.T) {
+		for _, p := range defaultProviderModels {
+			assert.Equal(t, providerDefaultModels[p.Name], p.Model, p.Name)
+		}
 	})
 
 	t.Run("returns default providers when no config", func(t *testing.T) {
@@ -2185,8 +2255,14 @@ func TestChatModel_CycleFilter(t *testing.T) {
 		assert.Equal(t, "gemini", m.sessionFilter)
 	})
 
-	t.Run("cycles from gemini to grok", func(t *testing.T) {
+	t.Run("cycles from gemini to github", func(t *testing.T) {
 		m.sessionFilter = "gemini"
+		m.cycleFilter()
+		assert.Equal(t, "github", m.sessionFilter)
+	})
+
+	t.Run("cycles from github to grok", func(t *testing.T) {
+		m.sessionFilter = "github"
 		m.cycleFilter()
 		assert.Equal(t, "grok", m.sessionFilter)
 	})
@@ -2661,7 +2737,7 @@ func TestFormatAPIError(t *testing.T) {
 		{
 			name:     "function calling not enabled (Gemini image model)",
 			err:      fmt.Errorf("Error 400, Message: Function calling is not enabled for models/gemini-2.0-flash-preview-image-generation, Status: INVALID_ARGUMENT"),
-			expected: "This model doesn't support function calling (tool use). Please switch to a different model using Ctrl+P. Try gemini-2.5-flash or gemini-1.5-pro.",
+			expected: "This model doesn't support function calling (tool use). Please switch to a different model using Ctrl+P. Try gemini-3.8-flash.",
 		},
 		{
 			name:     "error with request ID stripped",

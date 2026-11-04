@@ -3,11 +3,13 @@ package workdir
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	cp "github.com/otiai10/copy"
 
@@ -18,6 +20,20 @@ const (
 	// Terraform and OpenTofu both use .terraform as the default TF_DATA_DIR.
 	terraformDataDir           = ".terraform"
 	terraformWorkspaceStateDir = "terraform.tfstate.d"
+	// Suffix shared by the canonical .terraform.lock.hcl and the per-instance
+	// .<stack>-<component>.terraform.lock.hcl that Atmos manages.
+	terraformLockFileSuffix = ".terraform.lock.hcl"
+	// The default (non-workspace) local backend's state and backup files.
+	// "terraform.tfstate.d/<workspace>/" holds every other workspace's state and is already
+	// protected as a directory (terraformWorkspaceStateDir); these two are the default
+	// workspace's equivalent, written directly into the workdir root.
+	terraformStateFile       = "terraform.tfstate"
+	terraformStateBackupFile = "terraform.tfstate.backup"
+	// Terraform/OpenTofu's transient local-backend lock marker, present only while an
+	// operation holds the state lock. Sync should never run concurrently with one, but
+	// skipping it costs nothing and avoids sync fighting over a file it doesn't own if that
+	// assumption is ever violated.
+	terraformStateLockInfoFile = ".terraform.tfstate.lock.info"
 )
 
 // copyDir recursively copies a directory from src to dst.
@@ -47,6 +63,13 @@ func (f *DefaultFileSystem) RemoveAll(path string) error {
 	defer perf.Track(nil, "workdir.DefaultFileSystem.RemoveAll")()
 
 	return os.RemoveAll(path)
+}
+
+// Rename moves oldPath to newPath.
+func (f *DefaultFileSystem) Rename(oldPath, newPath string) error {
+	defer perf.Track(nil, "workdir.DefaultFileSystem.Rename")()
+
+	return os.Rename(oldPath, newPath)
 }
 
 // Exists checks if a path exists.
@@ -121,6 +144,13 @@ func syncSourceToDest(src, dst string, hasher Hasher) (map[string]bool, bool, er
 			return os.MkdirAll(dstPath, DirPermissions)
 		}
 
+		// Lock files are managed by the providers-lock restore/persist lifecycle, not by
+		// the source→workdir sync: do not copy a source lock into the workdir (and, via the
+		// matching skip in deleteRemovedFiles, do not let the workdir's own lock be deleted).
+		if shouldSkipSyncFile(relPath) {
+			return nil
+		}
+
 		srcFiles[relPath] = true
 
 		if fileNeedsCopy(path, dstPath, hasher) {
@@ -187,6 +217,12 @@ func deleteRemovedFiles(dst string, srcFiles map[string]bool) (bool, error) {
 			return nil
 		}
 
+		// Preserve the workdir's managed lock files (canonical + per-instance) across
+		// re-sync; they are not part of the source tree and must not be deleted.
+		if shouldSkipSyncFile(relPath) {
+			return nil
+		}
+
 		anyDeleted = true
 		return os.Remove(path)
 	})
@@ -198,6 +234,37 @@ func deleteRemovedFiles(dst string, srcFiles map[string]bool) (bool, error) {
 func shouldSkipSyncDir(relPath string) bool {
 	switch filepath.Base(filepath.Clean(relPath)) {
 	case AtmosDir, terraformDataDir, terraformWorkspaceStateDir:
+		return true
+	default:
+		return false
+	}
+}
+
+// shouldSkipSyncFile reports whether relPath is a file the source→workdir sync must never copy
+// in or delete: a Terraform dependency lock file (canonical .terraform.lock.hcl or a
+// per-instance .<stack>-<component>.terraform.lock.hcl, owned by the providers-lock
+// restore/persist lifecycle), or the default workspace's local-backend state file
+// (terraform.tfstate), its backup (terraform.tfstate.backup), or its transient lock marker
+// (.terraform.tfstate.lock.info). Without this, a local-backend component's actual Terraform
+// state -- real infrastructure history, not a regenerable artifact -- was silently deleted by
+// deleteRemovedFiles on every re-provision, since sync otherwise treats anything absent from
+// the source component directory as an orphan to remove.
+//
+// The lock-file check is intentionally basename-based: per-instance lock files
+// (.<stack>-<component>.terraform.lock.hcl) legitimately live at any depth under the workdir.
+// The three local-backend state filenames, by contrast, are only ever written by Terraform/
+// OpenTofu directly into the workdir root -- so they are matched against relPath itself (i.e.
+// the file must BE at the workdir root), not just its basename. A source file that happens to
+// share one of these names at a nested path (e.g. a real Terraform module's example fixture at
+// "examples/terraform.tfstate") is ordinary source content, not the protected state, and must
+// sync/delete like any other file.
+func shouldSkipSyncFile(relPath string) bool {
+	base := filepath.Base(relPath)
+	if strings.HasSuffix(base, terraformLockFileSuffix) {
+		return true
+	}
+	switch filepath.Clean(relPath) {
+	case terraformStateFile, terraformStateBackupFile, terraformStateLockInfoFile:
 		return true
 	default:
 		return false
@@ -261,7 +328,7 @@ func NewDefaultHasher() *DefaultHasher {
 func (h *DefaultHasher) HashDir(path string) (string, error) {
 	defer perf.Track(nil, "workdir.DefaultHasher.HashDir")()
 
-	hash := sha256.New()
+	hash := fnv.New128a()
 
 	// Collect all file paths first for sorted order.
 	var files []string
@@ -296,6 +363,7 @@ func (h *DefaultHasher) HashDir(path string) (string, error) {
 			return "", err
 		}
 		// Normalize to forward slashes for cross-platform consistency.
+		// codeql[go/weak-sensitive-data-hashing] -- this hashes a file path for a workdir content-checksum cache, never a password or credential.
 		hash.Write([]byte(filepath.ToSlash(relPath)))
 
 		// Hash file contents.
@@ -320,6 +388,7 @@ func (h *DefaultHasher) HashFile(path string) (string, error) {
 	defer file.Close()
 
 	hash := sha256.New()
+	// codeql[go/weak-sensitive-data-hashing]: workdir file hashes detect content changes and are not used for credential storage.
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}

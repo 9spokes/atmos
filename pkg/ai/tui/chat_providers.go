@@ -8,6 +8,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/cloudposse/atmos/pkg/ai"
+	"github.com/cloudposse/atmos/pkg/ai/agent/anthropic"
+	"github.com/cloudposse/atmos/pkg/ai/agent/azureopenai"
+	"github.com/cloudposse/atmos/pkg/ai/agent/bedrock"
+	"github.com/cloudposse/atmos/pkg/ai/agent/gemini"
+	"github.com/cloudposse/atmos/pkg/ai/agent/github"
+	"github.com/cloudposse/atmos/pkg/ai/agent/grok"
+	"github.com/cloudposse/atmos/pkg/ai/agent/ollama"
+	"github.com/cloudposse/atmos/pkg/ai/agent/openai"
 	"github.com/cloudposse/atmos/pkg/ai/instructions"
 	"github.com/cloudposse/atmos/pkg/ai/session"
 	"github.com/cloudposse/atmos/pkg/ai/skills"
@@ -35,22 +43,7 @@ func RunChat(opts ChatOptions) error {
 
 	// Add welcome message only if this is a new session (no existing messages).
 	if len(model.messages) == 0 {
-		model.addMessage(roleAssistant, `I'm here to help you with your Atmos infrastructure management. I can:
-
-• Describe components and their configurations
-• List available components and stacks
-• Validate stack configurations
-• Generate Terraform plans (read-only)
-• Answer questions about Atmos concepts and best practices
-• Help debug configuration issues
-
-Try asking me something like:
-- "List all available components"
-- "Describe the vpc component in the dev stack"
-- "What are Atmos stacks?"
-- "How do I validate my stack configuration?"
-
-What would you like to know?`)
+		model.addWelcomeMessage()
 	} else {
 		// Resuming existing session.
 		sessionName := "session"
@@ -116,21 +109,35 @@ var providerDisplayNames = map[string]string{
 	providerAnthropic: "Anthropic (Claude)",
 	"openai":          "OpenAI (GPT)",
 	"gemini":          "Google (Gemini)",
+	"github":          "GitHub Models",
 	"grok":            "xAI (Grok)",
 	"ollama":          "Ollama (Local)",
 	"bedrock":         "AWS Bedrock",
 	"azureopenai":     "Azure OpenAI",
 }
 
+// providerDefaultModels maps each provider to the DefaultModel its client falls back to.
+var providerDefaultModels = map[string]string{
+	providerAnthropic: anthropic.DefaultModel,
+	"openai":          openai.DefaultModel,
+	"gemini":          gemini.DefaultModel,
+	"github":          github.DefaultModel,
+	"grok":            grok.DefaultModel,
+	"ollama":          ollama.DefaultModel,
+	"bedrock":         bedrock.DefaultModel,
+	"azureopenai":     azureopenai.DefaultModel,
+}
+
 // defaultProviderModels is the fallback list when no providers are configured.
 var defaultProviderModels = []ProviderWithModel{
-	{Name: providerAnthropic, DisplayName: "Anthropic (Claude)", Model: "claude-sonnet-4-5-20250929"},
-	{Name: "openai", DisplayName: "OpenAI (GPT)", Model: defaultOpenAIModel},
-	{Name: "gemini", DisplayName: "Google (Gemini)", Model: "gemini-2.5-flash"},
-	{Name: "grok", DisplayName: "xAI (Grok)", Model: "grok-4"},
-	{Name: "ollama", DisplayName: "Ollama (Local)", Model: "llama3.3:70b"},
-	{Name: "bedrock", DisplayName: "AWS Bedrock", Model: "anthropic.claude-sonnet-4-5-20250929-v1:0"},
-	{Name: "azureopenai", DisplayName: "Azure OpenAI", Model: defaultOpenAIModel},
+	{Name: providerAnthropic, DisplayName: "Anthropic (Claude)", Model: anthropic.DefaultModel},
+	{Name: "openai", DisplayName: "OpenAI (GPT)", Model: openai.DefaultModel},
+	{Name: "gemini", DisplayName: "Google (Gemini)", Model: gemini.DefaultModel},
+	{Name: "github", DisplayName: "GitHub Models", Model: github.DefaultModel},
+	{Name: "grok", DisplayName: "xAI (Grok)", Model: grok.DefaultModel},
+	{Name: "ollama", DisplayName: "Ollama (Local)", Model: ollama.DefaultModel},
+	{Name: "bedrock", DisplayName: "AWS Bedrock", Model: bedrock.DefaultModel},
+	{Name: "azureopenai", DisplayName: "Azure OpenAI", Model: azureopenai.DefaultModel},
 }
 
 // getConfiguredProvidersForCreate returns configured providers with their models from atmos.yaml.
@@ -152,10 +159,16 @@ func (m *ChatModel) getConfiguredProvidersForCreate() []ProviderWithModel {
 			displayName = provider.Name
 		}
 
+		// An omitted model uses the provider's default, as the client does.
+		model := providerDefaultModels[provider.Name]
+		if providerConfig != nil && providerConfig.Model != "" {
+			model = providerConfig.Model
+		}
+
 		configured = append(configured, ProviderWithModel{
 			Name:        provider.Name,
 			DisplayName: displayName,
-			Model:       providerConfig.Model,
+			Model:       model,
 		})
 	}
 
@@ -174,14 +187,14 @@ func (m *ChatModel) providerSelectView() string {
 	// Title.
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color(theme.ColorCyan)).
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Link)).
 		MarginBottom(1)
 	content.WriteString(titleStyle.Render("Switch AI Provider"))
 	content.WriteString(newlineChar)
 
 	// Help text.
 	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(theme.ColorGray)).
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().TextMuted)).
 		Margin(0, 0, 1, 0)
 	content.WriteString(helpStyle.Render("\u2191/\u2193: Navigate | Enter: Select | Esc/q: Cancel"))
 	content.WriteString(doubleNewline)
@@ -200,12 +213,16 @@ func (m *ChatModel) providerSelectView() string {
 	return content.String()
 }
 
-// getCurrentProvider returns the name of the currently active provider.
+// getCurrentProvider returns the name of the currently active provider: the persisted
+// session's provider when session persistence is enabled (kept stable across a resumed
+// session), the active atmosConfig default otherwise, or providerAnthropic as a last
+// resort. Session persistence (ai.sessions.enabled) is opt-in and off by default, so the
+// atmosConfig fallback is what makes the common case resolve to a real provider name.
 func (m *ChatModel) getCurrentProvider() string {
 	switch {
 	case m.sess != nil && m.sess.Provider != "":
 		return m.sess.Provider
-	case m.atmosConfig.AI.DefaultProvider != "":
+	case m.atmosConfig != nil && m.atmosConfig.AI.DefaultProvider != "":
 		return m.atmosConfig.AI.DefaultProvider
 	default:
 		return providerAnthropic
@@ -227,10 +244,10 @@ func (m *ChatModel) renderProviderLine(index int, name, description, currentProv
 
 	selectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color(theme.ColorCyan)).
-		Background(lipgloss.Color(theme.ColorGray))
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Link)).
+		Background(lipgloss.Color(theme.GetCurrentColorScheme().TextMuted))
 	currentStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(theme.ColorGreen))
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Success))
 	normalStyle := lipgloss.NewStyle()
 
 	switch {
@@ -266,14 +283,14 @@ func (m *ChatModel) skillSelectView() string {
 	// Title.
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color(theme.ColorCyan)).
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Link)).
 		MarginBottom(1)
 	content.WriteString(titleStyle.Render("Switch AI Skill"))
 	content.WriteString(newlineChar)
 
 	// Help text.
 	helpStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(theme.ColorGray)).
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().TextMuted)).
 		Margin(0, 0, 1, 0)
 	content.WriteString(helpStyle.Render("\u2191/\u2193: Navigate | Enter: Select | Esc/q: Cancel"))
 	content.WriteString(doubleNewline)
@@ -314,10 +331,10 @@ func (m *ChatModel) renderSkillLine(index int, skill *skills.Skill, currentSkill
 
 	selectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color(theme.ColorCyan)).
-		Background(lipgloss.Color(theme.ColorGray))
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Link)).
+		Background(lipgloss.Color(theme.GetCurrentColorScheme().TextMuted))
 	currentStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(theme.ColorGreen))
+		Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Success))
 	normalStyle := lipgloss.NewStyle()
 
 	switch {

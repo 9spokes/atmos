@@ -1,6 +1,7 @@
 package flags
 
 import (
+	cfg "github.com/cloudposse/atmos/pkg/config"
 	"github.com/cloudposse/atmos/pkg/flags/global"
 	"github.com/cloudposse/atmos/pkg/perf"
 )
@@ -83,14 +84,20 @@ func (b *GlobalOptionsBuilder) registerWorkingDirectoryFlags(defaults *global.Fl
 func (b *GlobalOptionsBuilder) registerLoggingFlags(defaults *global.Flags) {
 	defer perf.Track(nil, "flags.GlobalOptionsBuilder.registerLoggingFlags")()
 
+	b.options = append(b.options, WithBoolFlag("explain", "", false, "Explain policy decisions on stderr without changing execution"))
+	b.options = append(b.options, WithEnvVars("explain", ExplainEnvVar))
+
 	b.options = append(b.options, WithStringFlag("logs-level", "", defaults.LogsLevel, "Logs level. Supported log levels are Trace, Debug, Info, Warning, Off. If the log level is set to Off, Atmos will not log any messages"))
 	b.options = append(b.options, WithEnvVars("logs-level", "ATMOS_LOGS_LEVEL"))
 
 	b.options = append(b.options, WithStringFlag("logs-file", "", defaults.LogsFile, "The file to write Atmos logs to. Logs can be written to any file or any standard file descriptor, including '/dev/stdout', '/dev/stderr' and '/dev/null'"))
 	b.options = append(b.options, WithEnvVars("logs-file", "ATMOS_LOGS_FILE"))
 
+	b.options = append(b.options, WithBoolFlag("logs-color", "", defaults.LogsColor, "Enable log color when available; --no-color and NO_COLOR always override"))
+	b.options = append(b.options, WithEnvVars("logs-color", "ATMOS_LOGS_COLOR"))
+
 	b.options = append(b.options, WithBoolFlag("no-color", "", defaults.NoColor, "Disable color output"))
-	b.options = append(b.options, WithEnvVars("no-color", "ATMOS_NO_COLOR", "NO_COLOR", "CLICOLOR"))
+	b.options = append(b.options, WithEnvVars("no-color", "ATMOS_NO_COLOR", "NO_COLOR"))
 }
 
 // registerTerminalFlags registers terminal and I/O configuration flags.
@@ -110,6 +117,18 @@ func (b *GlobalOptionsBuilder) registerTerminalFlags(defaults *global.Flags) {
 	b.options = append(b.options, WithStringFlag("pager", "", defaults.Pager.Value(), "Enable pager for output (--pager or --pager=true to enable, --pager=false to disable, --pager=less to use specific pager)"))
 	b.options = append(b.options, WithEnvVars("pager", "ATMOS_PAGER", "PAGER"))
 	b.options = append(b.options, WithNoOptDefVal("pager", "true"))
+
+	b.options = append(b.options, WithStringFlag(cfg.CastFlagName, "", defaults.Cast, "Record command output as an asciinema cast (--cast for generated path, --cast=path with a .cast, .gif, .mp4, .html, .ascii, .png, .jpg, or .jpeg extension for explicit output)"))
+	b.options = append(b.options, WithEnvVars(cfg.CastFlagName, cfg.CastEnvVarName))
+	b.options = append(b.options, WithNoOptDefValNoSpaceValue(cfg.CastFlagName, cfg.CastFlagAutoValue))
+	// The global --cast flag must not be stored at the bare "cast" Viper key:
+	// Viper treats any registered flag as shadowing every nested key under
+	// its own key (isPathShadowedInFlatMap), so a bare "cast" flag silently
+	// zeroes out unrelated nested keys like "cast.record.mode" or
+	// "cast.recording.width" whenever it's left unset. Store it at a nested
+	// leaf of its own instead, so "cast" stays free to be the map root the
+	// CastConfig schema (pkg/schema/schema.go) and other cast.* commands need.
+	b.options = append(b.options, WithViperKey(cfg.CastFlagName, cfg.CastFlagViperKey))
 }
 
 // registerAuthenticationFlags registers authentication flags.
@@ -121,17 +140,25 @@ func (b *GlobalOptionsBuilder) registerAuthenticationFlags(defaults *global.Flag
 	b.options = append(b.options, WithEnvVars("identity", "ATMOS_IDENTITY"))
 	b.options = append(b.options, WithNoOptDefVal("identity", "__SELECT__"))
 
+	// Authentication - justification recorded for privileged actions (e.g. PIM role
+	// activation). Auth-level (not kind-specific) so it is portable across implementations.
+	b.options = append(b.options, WithStringFlag("justification", "", defaults.Justification, "Reason recorded for privileged auth actions such as PIM role activation (--justification=REASON)"))
+	b.options = append(b.options, WithEnvVars("justification", "ATMOS_AUTH_JUSTIFICATION"))
+
 	// Note: --github-token is NOT a global flag. It's only used by toolchain commands
 	// and is registered as a persistent flag on the toolchain command in cmd/toolchain/toolchain.go.
 
 	// Profiles - configuration profiles.
-	b.options = append(b.options, func(cfg *parserConfig) {
-		cfg.registry.Register(&StringSliceFlag{
+	// NoOptDefVal enables the pattern: --profile (interactive selection),
+	// --profile name (explicit), mirroring the --identity flag above.
+	b.options = append(b.options, func(c *parserConfig) {
+		c.registry.Register(&StringSliceFlag{
 			Name:        "profile",
 			Shorthand:   "",
 			Default:     defaults.Profile,
 			Description: "Activate configuration profiles (comma-separated or repeated flag)",
 			EnvVars:     []string{"ATMOS_PROFILE"},
+			NoOptDefVal: cfg.ProfileFlagSelectValue,
 		})
 	})
 }
@@ -196,11 +223,22 @@ func (b *GlobalOptionsBuilder) registerSettingsFlags(defaults *global.Flags) {
 		"Override settings.list_merge_strategy for this invocation. Controls how lists are merged in Atmos stack manifests (replace, append, merge)",
 	))
 	b.options = append(b.options, WithEnvVars("settings-list-merge-strategy", "ATMOS_SETTINGS_LIST_MERGE_STRATEGY"))
+
+	b.options = append(b.options, WithStringFlag(
+		"edition",
+		"",
+		defaults.Edition,
+		"Pin defaults to a date-anchored edition (YYYY, YYYY-MM, or YYYY-MM-DD)",
+	))
+	b.options = append(b.options, WithEnvVars("edition", "ATMOS_EDITION"))
 }
 
 // registerSystemFlags registers system configuration flags.
 func (b *GlobalOptionsBuilder) registerSystemFlags(defaults *global.Flags) {
 	defer perf.Track(nil, "flags.GlobalOptionsBuilder.registerSystemFlags")()
+	b.options = append(b.options, WithStringFlag("docs", "", defaults.Docs, "Open command documentation (--docs=md renders it in the terminal)"))
+	b.options = append(b.options, WithNoOptDefValNoSpaceValue("docs", "true"))
+	b.options = append(b.options, WithBoolFlag("example", "", defaults.Example, "Select and initialize a related example (prints install commands without a terminal)"))
 
 	b.options = append(b.options, WithStringFlag("redirect-stderr", "", defaults.RedirectStderr, "File descriptor to redirect stderr to. Errors can be redirected to any file or any standard file descriptor (including '/dev/null')"))
 	b.options = append(b.options, WithEnvVars("redirect-stderr", "ATMOS_REDIRECT_STDERR"))
@@ -219,12 +257,9 @@ func (b *GlobalOptionsBuilder) registerSystemFlags(defaults *global.Flags) {
 	b.options = append(b.options, WithStringFlag("use-version", "", defaults.UseVersion, "Use a specific version of Atmos (e.g., --use-version=1.160.0)"))
 	b.options = append(b.options, WithEnvVars("use-version", "ATMOS_USE_VERSION"))
 
-	// Skip hooks at runtime. --skip-hooks (no value) skips all hooks for the
-	// current invocation; --skip-hooks=name1,name2 skips only the named
-	// hooks. Per-invocation only — does not propagate to nested commands.
-	b.options = append(b.options, WithStringFlag("skip-hooks", "", defaults.SkipHooks, "Skip lifecycle hooks for this invocation. Use --skip-hooks (no value) to skip all, or --skip-hooks=name1,name2 to skip specific hooks by name"))
-	b.options = append(b.options, WithEnvVars("skip-hooks", "ATMOS_SKIP_HOOKS"))
-	b.options = append(b.options, WithNoOptDefVal("skip-hooks", "*"))
+	// Note: --skip-hooks is NOT a global flag. Lifecycle hooks only run on
+	// terraform plan/apply/deploy, so the flag is registered as a persistent
+	// flag on the terraform command in cmd/terraform/flags.go.
 }
 
 // Build creates a StandardParser with all global flags configured.

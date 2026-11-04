@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	"github.com/cloudposse/atmos/pkg/flags"
 	"github.com/cloudposse/atmos/pkg/flags/compat"
 	"github.com/cloudposse/atmos/pkg/toolchain"
@@ -17,7 +18,7 @@ var uninstallCmd = &cobra.Command{
 	Long: `Uninstall a specific tool version or all tools listed in .tool-versions.
 
 Use --all to uninstall every tool found in the install directory,
-including tools installed via component dependencies.`,
+including tools installed via component, workflow, or command dependencies.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runUninstall,
 }
@@ -36,6 +37,10 @@ func init() {
 	if err := uninstallParser.BindToViper(viper.GetViper()); err != nil {
 		panic(err)
 	}
+	internal.RegisterCommandMetadata(
+		uninstallCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/toolchain/uninstall"),
+	)
 }
 
 func runUninstall(cmd *cobra.Command, args []string) error {

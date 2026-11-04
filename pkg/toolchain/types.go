@@ -54,10 +54,15 @@ func (r *realRegistryFactory) NewAquaRegistry() registry.ToolRegistry {
 // It automatically injects the real registry factory and loads registries.
 // Configuration is read from atmos.yaml.
 func NewInstaller(opts ...Option) *Installer {
-	defer perf.Track(nil, "toolchain.NewInstaller")()
+	return NewInstallerForConfig(GetAtmosConfig(), opts...)
+}
+
+// NewInstallerForConfig creates an installer scoped to a project without reading global configuration.
+func NewInstallerForConfig(config *schema.AtmosConfiguration, opts ...Option) *Installer {
+	defer perf.Track(config, "toolchain.NewInstallerForConfig")()
 
 	// Set binDir from config (GetInstallPath() + "/bin").
-	binDir := filepath.Join(GetInstallPath(), "bin")
+	binDir := filepath.Join(GetInstallPathForConfig(config), "bin")
 
 	// Build base options: binDir and registry factory first (so user opts can override).
 	baseOpts := []Option{
@@ -66,7 +71,7 @@ func NewInstaller(opts ...Option) *Installer {
 	}
 
 	// Try to load configured registries from atmos.yaml.
-	if config := GetAtmosConfig(); config != nil {
+	if config != nil {
 		log.Debug("Loading toolchain registries from atmos.yaml",
 			"registryCount", len(config.Toolchain.Registries))
 		// Pass AtmosConfig to resolver for alias resolution.
@@ -110,6 +115,20 @@ func WithCacheDir(cacheDir string) Option {
 	defer perf.Track(nil, "toolchain.WithCacheDir")()
 
 	return installer.WithCacheDir(cacheDir)
+}
+
+// WithDownloadProgress reports bytes received while an asset is downloaded.
+func WithDownloadProgress(progress func(downloaded, total int64)) Option {
+	defer perf.Track(nil, "toolchain.WithDownloadProgress")()
+
+	return installer.WithDownloadProgress(progress)
+}
+
+// WithForceLockFile forces lock-file writes regardless of toolchain.use_lock_file.
+func WithForceLockFile() Option {
+	defer perf.Track(nil, "toolchain.WithForceLockFile")()
+
+	return installer.WithForceLockFile()
 }
 
 // WithResolver sets the tool resolver.

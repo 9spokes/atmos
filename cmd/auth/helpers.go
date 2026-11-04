@@ -67,8 +67,10 @@ func formatDuration(d time.Duration) string {
 func displayAuthSuccess(whoami *authTypes.WhoamiInfo) {
 	defer perf.Track(nil, "auth.displayAuthSuccess")()
 
-	// Display checkmark with success message.
-	ui.Writef("\n%s Authentication successful!\n\n", theme.Styles.Checkmark)
+	// Display success message.
+	ui.Writeln("")
+	ui.Success("Authentication successful!")
+	ui.Writeln("")
 
 	// Build table rows.
 	var rows [][]string
@@ -96,7 +98,7 @@ func displayAuthSuccess(whoami *authTypes.WhoamiInfo) {
 		expiresStr := whoami.Expiration.Format("2006-01-02 15:04:05 MST")
 		duration := formatDuration(time.Until(*whoami.Expiration))
 		// Style duration with darker gray.
-		durationStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#808080"))
+		durationStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.GetCurrentColorScheme().TextMuted))
 		expiresStr = fmt.Sprintf("%s %s", expiresStr, durationStyle.Render(fmt.Sprintf("(%s)", duration)))
 		rows = append(rows, []string{"Expires", expiresStr})
 	}
@@ -117,7 +119,7 @@ func displayAuthSuccess(whoami *authTypes.WhoamiInfo) {
 			if col == 0 {
 				// Key column - use cyan color.
 				return lipgloss.NewStyle().
-					Foreground(lipgloss.Color(theme.ColorCyan)).
+					Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Link)).
 					Padding(0, 1, 0, 2)
 			}
 			// Value column - default color with padding.

@@ -3,13 +3,23 @@
 package ansible
 
 import (
+	"context"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	"github.com/cloudposse/atmos/pkg/component"
 	ansibleComp "github.com/cloudposse/atmos/pkg/component/ansible"
 	"github.com/cloudposse/atmos/pkg/flags"
 	"github.com/cloudposse/atmos/pkg/schema"
+)
+
+var (
+	getComponentProvider = component.GetProvider
+	executeVersionDirect = func(ctx context.Context, info *schema.ConfigAndStacksInfo) error {
+		return ansibleComp.ExecuteVersion(ctx, info)
+	}
 )
 
 // versionCmd represents the `atmos ansible version` command.
@@ -26,6 +36,13 @@ To see all available options, refer to https://docs.ansible.com/ansible/latest/c
 	RunE: runVersion,
 }
 
+func init() {
+	internal.RegisterCommandMetadata(
+		versionCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/ansible/version"),
+	)
+}
+
 // runVersion executes the ansible version command.
 func runVersion(cmd *cobra.Command, _ []string) error {
 	// Parse global flags to honor config selection flags.
@@ -37,16 +54,22 @@ func runVersion(cmd *cobra.Command, _ []string) error {
 		AtmosConfigDirsFromArg:  globalFlags.ConfigPath,
 		ProfilesFromArg:         globalFlags.Profile,
 	}
+	var err error
+	configAndStacksInfo.ComponentCommand, err = flags.ComponentCommand(cmd, "ansible")
+	if err != nil {
+		return err
+	}
 
 	// Get the ansible component provider from the registry.
-	provider, ok := component.GetProvider("ansible")
+	provider, ok := getComponentProvider("ansible")
 	if !ok {
 		// Fallback to direct execution if provider not found.
-		return ansibleComp.ExecuteVersion(&configAndStacksInfo)
+		return executeVersionDirect(cmd.Context(), &configAndStacksInfo)
 	}
 
 	// Build execution context for the component provider.
 	ctx := &component.ExecutionContext{
+		Context:             cmd.Context(),
 		ComponentType:       "ansible",
 		Command:             "ansible",
 		SubCommand:          "version",

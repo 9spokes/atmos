@@ -10,6 +10,8 @@ import (
 )
 
 func TestCommandHandlersRegistration(t *testing.T) {
+	t.Parallel()
+
 	// Verify all command handlers are registered.
 	tests := []struct {
 		name        string
@@ -18,10 +20,13 @@ func TestCommandHandlersRegistration(t *testing.T) {
 	}{
 		{"atmos", CategoryCommand, false},
 		{"shell", CategoryCommand, false},
+		{"script", CategoryCommand, false},
+		{"container", CategoryCommand, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			handler, ok := Get(tt.name)
 			require.True(t, ok, "handler %s should be registered", tt.name)
 			assert.Equal(t, tt.name, handler.GetName())
@@ -32,6 +37,8 @@ func TestCommandHandlersRegistration(t *testing.T) {
 }
 
 func TestAtmosHandlerValidation(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 
@@ -81,6 +88,7 @@ func TestAtmosHandlerValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := handler.Validate(tt.step)
 			if tt.expectErr {
 				assert.Error(t, err)
@@ -92,6 +100,8 @@ func TestAtmosHandlerValidation(t *testing.T) {
 }
 
 func TestShellHandlerValidation(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("shell")
 	require.True(t, ok)
 
@@ -153,6 +163,170 @@ func TestShellHandlerValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := handler.Validate(tt.step)
+			if tt.expectErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestScriptHandlerValidation(t *testing.T) {
+	t.Parallel()
+
+	handler, ok := Get("script")
+	require.True(t, ok)
+
+	tests := []struct {
+		name      string
+		step      *schema.WorkflowStep
+		expectErr bool
+	}{
+		{
+			name: "valid script",
+			step: &schema.WorkflowStep{
+				Name:        "test",
+				Type:        "script",
+				Interpreter: "python3",
+				Script:      "print('hello')",
+			},
+		},
+		{
+			name: "missing interpreter",
+			step: &schema.WorkflowStep{
+				Name:   "test",
+				Type:   "script",
+				Script: "print('hello')",
+			},
+			expectErr: true,
+		},
+		{
+			name: "missing script",
+			step: &schema.WorkflowStep{
+				Name:        "test",
+				Type:        "script",
+				Interpreter: "python3",
+			},
+			expectErr: true,
+		},
+		{
+			name: "rejects command",
+			step: &schema.WorkflowStep{
+				Name:        "test",
+				Type:        "script",
+				Interpreter: "python3",
+				Script:      "print('hello')",
+				Command:     "python3 - <<'PY'",
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := handler.Validate(tt.step)
+			if tt.expectErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestContainerHandlerValidation(t *testing.T) {
+	t.Parallel()
+
+	handler, ok := Get("container")
+	require.True(t, ok)
+
+	tests := []struct {
+		name      string
+		step      *schema.WorkflowStep
+		expectErr bool
+	}{
+		{
+			name: "valid minimal container step",
+			step: &schema.WorkflowStep{
+				Name: "test",
+				Type: "container",
+				Run: &schema.ContainerRunStep{
+					Image:   "alpine:latest",
+					Command: "echo hello",
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "missing image",
+			step: &schema.WorkflowStep{
+				Name: "test",
+				Type: "container",
+				Run: &schema.ContainerRunStep{
+					Command: "echo hello",
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "missing command",
+			step: &schema.WorkflowStep{
+				Name: "test",
+				Type: "container",
+				Run: &schema.ContainerRunStep{
+					Image: "alpine:latest",
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "invalid runtime",
+			step: &schema.WorkflowStep{
+				Name:     "test",
+				Type:     "container",
+				Provider: "containerd",
+				Run: &schema.ContainerRunStep{
+					Image:   "alpine:latest",
+					Command: "echo hello",
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "invalid pull policy",
+			step: &schema.WorkflowStep{
+				Name: "test",
+				Type: "container",
+				Run: &schema.ContainerRunStep{
+					Image:   "alpine:latest",
+					Command: "echo hello",
+					Pull:    "sometimes",
+				},
+			},
+			expectErr: true,
+		},
+		{
+			name: "invalid cleanup policy",
+			step: &schema.WorkflowStep{
+				Name: "test",
+				Type: "container",
+				Run: &schema.ContainerRunStep{
+					Image:   "alpine:latest",
+					Command: "echo hello",
+					Cleanup: "later",
+				},
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			err := handler.Validate(tt.step)
 			if tt.expectErr {
 				assert.Error(t, err)
@@ -164,6 +338,8 @@ func TestShellHandlerValidation(t *testing.T) {
 }
 
 func TestOutputModeTypes(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		mode     OutputMode
 		expected string
@@ -176,12 +352,15 @@ func TestOutputModeTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.expected, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.expected, string(tt.mode))
 		})
 	}
 }
 
 func TestGetOutputMode(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		stepOutput     string
@@ -210,6 +389,7 @@ func TestGetOutputMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			step := &schema.WorkflowStep{Output: tt.stepOutput}
 			workflow := &schema.WorkflowDefinition{Output: tt.workflowOutput}
 
@@ -220,7 +400,10 @@ func TestGetOutputMode(t *testing.T) {
 }
 
 func TestGetViewportConfig(t *testing.T) {
+	t.Parallel()
+
 	t.Run("step overrides workflow", func(t *testing.T) {
+		t.Parallel()
 		stepViewport := &schema.ViewportConfig{Height: 30, Width: 100}
 		workflowViewport := &schema.ViewportConfig{Height: 20, Width: 80}
 
@@ -232,6 +415,7 @@ func TestGetViewportConfig(t *testing.T) {
 	})
 
 	t.Run("workflow default when step nil", func(t *testing.T) {
+		t.Parallel()
 		workflowViewport := &schema.ViewportConfig{Height: 20, Width: 80}
 
 		step := &schema.WorkflowStep{}
@@ -242,6 +426,7 @@ func TestGetViewportConfig(t *testing.T) {
 	})
 
 	t.Run("nil when both empty", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{}
 		workflow := &schema.WorkflowDefinition{}
 
@@ -251,6 +436,8 @@ func TestGetViewportConfig(t *testing.T) {
 }
 
 func TestContainsStackFlag(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		args     []string
@@ -290,6 +477,7 @@ func TestContainsStackFlag(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := containsStackFlag(tt.args)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -297,6 +485,8 @@ func TestContainsStackFlag(t *testing.T) {
 }
 
 func TestCommandHandlersByCategory(t *testing.T) {
+	t.Parallel()
+
 	byCategory := ListByCategory()
 	commandHandlers := byCategory[CategoryCommand]
 
@@ -311,4 +501,5 @@ func TestCommandHandlersByCategory(t *testing.T) {
 	}
 	assert.Contains(t, handlerNames, "atmos")
 	assert.Contains(t, handlerNames, "shell")
+	assert.Contains(t, handlerNames, "script")
 }

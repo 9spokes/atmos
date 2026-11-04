@@ -1,22 +1,28 @@
 package exec
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/schema"
 )
 
 // TestNewAuthContextWrapper verifies that authContextWrapper is properly created.
 func TestNewAuthContextWrapper(t *testing.T) {
+	t.Parallel()
+
 	t.Run("nil authContext returns nil wrapper", func(t *testing.T) {
+		t.Parallel()
 		wrapper := newAuthContextWrapper(nil)
 		assert.Nil(t, wrapper, "Should return nil for nil authContext")
 	})
 
 	t.Run("valid authContext creates wrapper with stackInfo", func(t *testing.T) {
+		t.Parallel()
 		authContext := &schema.AuthContext{
 			AWS: &schema.AWSAuthContext{
 				Profile: "test-profile",
@@ -34,6 +40,8 @@ func TestNewAuthContextWrapper(t *testing.T) {
 
 // TestAuthContextWrapperGetStackInfo verifies GetStackInfo returns the correct stackInfo.
 func TestAuthContextWrapperGetStackInfo(t *testing.T) {
+	t.Parallel()
+
 	authContext := &schema.AuthContext{
 		AWS: &schema.AWSAuthContext{
 			Profile:         "test-identity",
@@ -56,6 +64,8 @@ func TestAuthContextWrapperGetStackInfo(t *testing.T) {
 // TestAuthContextWrapperResolvePrincipalSetting verifies ResolvePrincipalSetting returns nil, false.
 // The wrapper doesn't have access to identity/provider configuration, only auth context.
 func TestAuthContextWrapperResolvePrincipalSetting(t *testing.T) {
+	t.Parallel()
+
 	authContext := &schema.AuthContext{
 		AWS: &schema.AWSAuthContext{
 			Profile: "test-identity",
@@ -80,6 +90,8 @@ func TestAuthContextWrapperResolvePrincipalSetting(t *testing.T) {
 // The wrapper only propagates auth context for nested component resolution and
 // must never be used as a real credential store.
 func TestAuthContextWrapperCredentialStoreType(t *testing.T) {
+	t.Parallel()
+
 	wrapper := newAuthContextWrapper(&schema.AuthContext{})
 	require.NotNil(t, wrapper)
 
@@ -91,6 +103,8 @@ func TestAuthContextWrapperCredentialStoreType(t *testing.T) {
 // TestAuthContextWrapperResolveProviderConfig verifies ResolveProviderConfig returns nil, false.
 // The wrapper doesn't have access to provider configuration.
 func TestAuthContextWrapperResolveProviderConfig(t *testing.T) {
+	t.Parallel()
+
 	authContext := &schema.AuthContext{
 		AWS: &schema.AWSAuthContext{
 			Profile: "test-identity",
@@ -109,4 +123,19 @@ func TestAuthContextWrapperResolveProviderConfig(t *testing.T) {
 	provider, found = wrapper.ResolveProviderConfig("test-identity")
 	assert.Nil(t, provider, "ResolveProviderConfig should return nil for any identity")
 	assert.False(t, found, "ResolveProviderConfig should return false for any identity")
+}
+
+// TestAuthContextWrapper_AuthenticateIsolated verifies the wrapper never authenticates and never panics.
+func TestAuthContextWrapper_AuthenticateIsolated(t *testing.T) {
+	t.Parallel()
+
+	wrapper := &authContextWrapper{stackInfo: &schema.ConfigAndStacksInfo{}}
+
+	var got *schema.AuthContext
+	var err error
+	require.NotPanics(t, func() {
+		got, err = wrapper.AuthenticateIsolated(context.Background(), "any-identity")
+	})
+	require.ErrorIs(t, err, errUtils.ErrNotImplemented)
+	assert.Nil(t, got)
 }

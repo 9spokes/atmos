@@ -1,6 +1,19 @@
+---
+title: KICS Hook
+tags: [Hooks]
+cast:
+  file: /casts/examples/hooks-kics/security-scan.cast
+  title: atmos KICS hook
+related_docs:
+  - label: "Terraform plan"
+    url: /cli/commands/terraform/plan
+  - label: "Lifecycle hook configuration"
+    url: /stacks/hooks
+---
+
 # `hooks-kics`
 
-Demonstrates the **`kics`** hook kind: a `before-terraform-plan` hook that
+Demonstrates the [**`kics`** hook kind](https://atmos.tools/stacks/hooks): an `after.terraform.plan` hook that
 runs `kics scan` against the component and renders the SARIF findings
 summary in the terminal.
 

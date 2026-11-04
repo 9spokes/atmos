@@ -111,60 +111,14 @@ func TestUserIdentity_Environment_WithoutRegion(t *testing.T) {
 	assert.False(t, hasDefaultRegion, "AWS_DEFAULT_REGION should not be set when region is not explicitly configured")
 }
 
-func TestIsStandaloneAWSUserChain(t *testing.T) {
-	// Not standalone when multiple elements.
-	assert.False(t, IsStandaloneAWSUserChain([]string{"p", "dev"}, map[string]schema.Identity{"dev": {Kind: "aws/user"}}))
-
-	// Single element but wrong kind -> false.
-	assert.False(t, IsStandaloneAWSUserChain([]string{"dev"}, map[string]schema.Identity{"dev": {Kind: "aws/permission-set"}}))
-
-	// Single element and aws/user -> true.
-	assert.True(t, IsStandaloneAWSUserChain([]string{"dev"}, map[string]schema.Identity{"dev": {Kind: "aws/user"}}))
-}
-
-// stubUser satisfies types.Identity for testing AuthenticateStandaloneAWSUser.
-type stubUser struct{ creds types.ICredentials }
-
-func (s stubUser) Kind() string                     { return "aws/user" }
-func (s stubUser) GetProviderName() (string, error) { return "aws-user", nil }
-func (s stubUser) Authenticate(_ context.Context, _ types.ICredentials) (types.ICredentials, error) {
-	return s.creds, nil
-}
-func (s stubUser) Validate() error                         { return nil }
-func (s stubUser) Environment() (map[string]string, error) { return map[string]string{}, nil }
-func (s stubUser) Paths() ([]types.Path, error)            { return []types.Path{}, nil }
-func (s stubUser) PostAuthenticate(_ context.Context, _ *types.PostAuthenticateParams) error {
-	return nil
-}
-
-func (s stubUser) Logout(_ context.Context) error {
-	return nil
-}
-
-func (s stubUser) CredentialsExist() (bool, error) {
-	return true, nil
-}
-
-func (s stubUser) LoadCredentials(_ context.Context) (types.ICredentials, error) {
-	return s.creds, nil
-}
-
-func (s stubUser) PrepareEnvironment(_ context.Context, environ map[string]string) (map[string]string, error) {
-	return environ, nil
-}
-func (s stubUser) SetRealm(_ string) {}
-
-func TestAuthenticateStandaloneAWSUser(t *testing.T) {
-	// Not found -> error.
-	_, err := AuthenticateStandaloneAWSUser(context.Background(), "missing", map[string]types.Identity{})
-	assert.Error(t, err)
-
-	// Found -> returns credentials from identity implementation.
-	out, err := AuthenticateStandaloneAWSUser(context.Background(), "dev", map[string]types.Identity{
-		"dev": stubUser{creds: &types.AWSCredentials{AccessKeyID: "AKIA", Region: "us-east-1"}},
-	})
+func TestUserIdentityIsStandalone(t *testing.T) {
+	identity, err := NewUserIdentity("dev", &schema.Identity{Kind: "aws/user"})
 	require.NoError(t, err)
-	assert.Equal(t, "AKIA", out.(*types.AWSCredentials).AccessKeyID)
+
+	// aws/user identities authenticate without an upstream provider step.
+	standalone, ok := identity.(types.StandaloneIdentity)
+	require.True(t, ok, "aws/user identity must implement types.StandaloneIdentity")
+	assert.True(t, standalone.IsStandalone())
 }
 
 // Use in-memory keyring for this test package.
@@ -281,6 +235,84 @@ func TestUserIdentity_Authenticate_GeneratesNewWhenExpired(t *testing.T) {
 	// The important thing is that it tried, proving it detected the expiration.
 	// In a real scenario with valid base credentials, this would succeed.
 	assert.Error(t, err, "Should attempt to generate new session token for expired credentials")
+}
+
+// TestSessionStillValid verifies the reuse rule: any unexpired session by default, and a session
+// that outlasts the caller-requested minimum validity when the context carries one.
+func TestSessionStillValid(t *testing.T) {
+	in := func(d time.Duration) *types.AWSCredentials {
+		return &types.AWSCredentials{Expiration: time.Now().Add(d).UTC().Format(time.RFC3339)}
+	}
+
+	tests := []struct {
+		name  string
+		creds types.ICredentials
+		ctx   context.Context
+		want  bool
+	}{
+		{name: "default reuses an unexpired session", creds: in(time.Minute), ctx: context.Background(), want: true},
+		{name: "default rejects an expired session", creds: in(-time.Minute), ctx: context.Background(), want: false},
+		{name: "minimum below remaining lifetime reuses", creds: in(20 * time.Minute), ctx: types.WithMinCredentialValidity(context.Background(), 5*time.Minute), want: true},
+		{name: "minimum above remaining lifetime refreshes", creds: in(20 * time.Minute), ctx: types.WithMinCredentialValidity(context.Background(), 30*time.Minute), want: false},
+		{name: "zero minimum reuses any unexpired session", creds: in(time.Minute), ctx: types.WithMinCredentialValidity(context.Background(), 0), want: true},
+		{name: "unparseable expiration refreshes", creds: &types.AWSCredentials{Expiration: "soon"}, ctx: context.Background(), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, sessionStillValid(tt.ctx, tt.creds))
+		})
+	}
+}
+
+// TestUserIdentity_Authenticate_HonorsMinValidityFromContext verifies that a caller-requested minimum
+// validity (atmos aws credential-process --min-validity) makes aws/user refresh a session that is
+// valid but too short-lived, instead of returning its own cache.
+func TestUserIdentity_Authenticate_HonorsMinValidityFromContext(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	originalPromptFunc := promptMfaTokenFunc
+	defer func() { promptMfaTokenFunc = originalPromptFunc }()
+	promptMfaTokenFunc = func(_ *types.AWSCredentials) (string, error) {
+		return "", errors.New("mock: should not call MFA prompt in this test")
+	}
+	originalCredPromptFunc := PromptCredentialsFunc
+	defer func() { PromptCredentialsFunc = originalCredPromptFunc }()
+	PromptCredentialsFunc = nil
+
+	identity, err := NewUserIdentity("test-user", &schema.Identity{
+		Kind: "aws/user",
+		Credentials: map[string]any{
+			"access_key_id":     "AKIA_LONG_LIVED",
+			"secret_access_key": "SECRET_LONG_LIVED",
+			"region":            "us-east-1",
+		},
+	})
+	require.NoError(t, err)
+	userIdent := identity.(*userIdentity)
+
+	require.NoError(t, userIdent.writeAWSFiles(&types.AWSCredentials{
+		AccessKeyID:     "AKIA_SESSION",
+		SecretAccessKey: "SECRET_SESSION",
+		SessionToken:    "SESSION_TOKEN_123",
+		Region:          "us-east-1",
+		Expiration:      time.Now().Add(20 * time.Minute).Format(time.RFC3339),
+	}, "us-east-1"))
+
+	// A minimum the session satisfies reuses it.
+	got, err := userIdent.Authenticate(types.WithMinCredentialValidity(context.Background(), 5*time.Minute), nil)
+	require.NoError(t, err)
+	awsCreds, ok := got.(*types.AWSCredentials)
+	require.True(t, ok)
+	assert.Equal(t, "AKIA_SESSION", awsCreds.AccessKeyID)
+
+	// A minimum it does not satisfy must not return the cached session: a canceled context makes the
+	// refresh fail fast, so an error proves the refresh path was taken instead of the cache.
+	ctx, cancel := context.WithCancel(types.WithMinCredentialValidity(context.Background(), 30*time.Minute))
+	cancel()
+	got, err = userIdent.Authenticate(ctx, nil)
+	require.Error(t, err, "a session shorter than the requested minimum validity must be refreshed")
+	assert.Nil(t, got)
 }
 
 func TestUser_credentialsFromConfig(t *testing.T) {
@@ -2231,72 +2263,6 @@ func TestUserIdentity_HandleSTSErrorWithRetry_EdgeCases(t *testing.T) {
 	})
 }
 
-// TestUserIdentity_IsStandaloneAWSUserChain tests the IsStandaloneAWSUserChain function.
-func TestUserIdentity_IsStandaloneAWSUserChain(t *testing.T) {
-	tests := []struct {
-		name       string
-		chain      []string
-		identities map[string]schema.Identity
-		expected   bool
-	}{
-		{
-			name:       "empty chain",
-			chain:      []string{},
-			identities: map[string]schema.Identity{},
-			expected:   false,
-		},
-		{
-			name:  "single aws/user identity",
-			chain: []string{"my-user"},
-			identities: map[string]schema.Identity{
-				"my-user": {Kind: "aws/user"},
-			},
-			expected: true,
-		},
-		{
-			name:  "single non-user identity",
-			chain: []string{"my-role"},
-			identities: map[string]schema.Identity{
-				"my-role": {Kind: "aws/assume-role"},
-			},
-			expected: false,
-		},
-		{
-			name:  "multiple identities in chain",
-			chain: []string{"user", "role"},
-			identities: map[string]schema.Identity{
-				"user": {Kind: "aws/user"},
-				"role": {Kind: "aws/assume-role"},
-			},
-			expected: false,
-		},
-		{
-			name:       "identity not found",
-			chain:      []string{"missing"},
-			identities: map[string]schema.Identity{},
-			expected:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsStandaloneAWSUserChain(tt.chain, tt.identities)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-// TestUserIdentity_AuthenticateStandaloneAWSUser tests the AuthenticateStandaloneAWSUser function.
-func TestUserIdentity_AuthenticateStandaloneAWSUser(t *testing.T) {
-	t.Run("returns error when identity not found", func(t *testing.T) {
-		identities := make(map[string]types.Identity)
-
-		_, err := AuthenticateStandaloneAWSUser(context.Background(), "missing", identities)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found")
-	})
-}
-
 // TestUserIdentity_CredentialsFromConfig tests the credentialsFromConfig function.
 func TestUserIdentity_CredentialsFromConfig(t *testing.T) {
 	t.Run("returns nil when no access key", func(t *testing.T) {
@@ -2435,6 +2401,195 @@ func TestUserIdentity_Authenticate_WebflowFallbackSuccess(t *testing.T) {
 	assert.Equal(t, "SECRET_WF_AUTH", awsCreds.SecretAccessKey)
 	assert.Equal(t, "TOKEN_WF_AUTH", awsCreds.SessionToken)
 	assert.Equal(t, "us-east-2", awsCreds.Region)
+}
+
+// TestUserIdentity_Authenticate_ForceWebflow verifies that an explicit browser
+// login bypasses every reusable credential source: AWS session files, refresh
+// tokens, YAML IAM keys, and keyring IAM keys. The resulting temporary session
+// is still written to the normal AWS session-file cache.
+func TestUserIdentity_Authenticate_ForceWebflow(t *testing.T) {
+	blockStdin(t)
+
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("ATMOS_XDG_CACHE_HOME", tmpDir)
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		assert.Equal(t, "authorization_code", r.Form.Get("grant_type"),
+			"forced webflow must start a browser authorization-code exchange, not refresh a token")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": map[string]string{
+				"access_key_id":     "AKID_FORCED_WEBFLOW",
+				"secret_access_key": "SECRET_FORCED_WEBFLOW",
+				"session_token":     "TOKEN_FORCED_WEBFLOW",
+			},
+			"expires_in": 900,
+		})
+	}))
+	defer tokenServer.Close()
+
+	origClient := defaultHTTPClient
+	defaultHTTPClient = &mockHTTPClient{doFunc: func(req *http.Request) (*http.Response, error) {
+		req.URL, _ = urlpkg.Parse(tokenServer.URL + req.URL.Path)
+		return http.DefaultClient.Do(req)
+	}}
+	defer func() { defaultHTTPClient = origClient }()
+
+	origTTY := webflowIsTTYFunc
+	webflowIsTTYFunc = func() bool { return false }
+	defer func() { webflowIsTTYFunc = origTTY }()
+
+	origDisplay := displayWebflowPlainTextFunc
+	displayWebflowPlainTextFunc = func(authURL string) {
+		go func() {
+			time.Sleep(30 * time.Millisecond)
+			parsed, _ := urlpkg.Parse(authURL)
+			callbackURL := parsed.Query().Get("redirect_uri") + "?code=forced-webflow-code&state=" + parsed.Query().Get("state")
+			resp, err := http.Get(callbackURL)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}()
+	}
+	defer func() { displayWebflowPlainTextFunc = origDisplay }()
+
+	identityName := "test-force-webflow-" + t.Name()
+	identity, err := NewUserIdentity(identityName, &schema.Identity{
+		Kind: "aws/user",
+		Credentials: map[string]any{
+			"access_key_id":     "AKID_CONFIGURED_IAM",
+			"secret_access_key": "SECRET_CONFIGURED_IAM",
+			"region":            "us-east-2",
+		},
+	})
+	require.NoError(t, err)
+	userIdent := identity.(*userIdentity)
+
+	// A valid cached session would normally end authentication before IAM keys
+	// are considered. --webflow must bypass it.
+	require.NoError(t, userIdent.writeAWSFiles(&types.AWSCredentials{
+		AccessKeyID: "AKID_CACHED_SESSION", SecretAccessKey: "SECRET_CACHED_SESSION", SessionToken: "CACHED_TOKEN",
+		Region: "us-east-2", Expiration: time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+	}, "us-east-2"))
+
+	// Seed a valid refresh token too; the forced path must not redeem it.
+	userIdent.saveRefreshCache(&webflowRefreshCache{
+		RefreshToken: "cached-refresh-token", Region: "us-east-2", ExpiresAt: time.Now().Add(11 * time.Hour), DPoPKey: testEncodedDPoPKey(t),
+	})
+
+	// Keep a separate IAM entry in the configured credential store and prove it
+	// survives the forced login unchanged.
+	store := atmosCreds.NewCredentialStoreWithConfig(&schema.AuthConfig{
+		Keyring: schema.KeyringConfig{Type: types.CredentialStoreTypeMemory},
+	})
+	keyringCreds := &types.AWSCredentials{AccessKeyID: "AKID_KEYRING_IAM", SecretAccessKey: "SECRET_KEYRING_IAM"}
+	require.NoError(t, store.Store(identityName, keyringCreds, ""))
+	userIdent.SetCredentialStore(store)
+
+	ctx, cancel := context.WithTimeout(types.WithForceAWSWebflow(context.Background(), true), 10*time.Second)
+	defer cancel()
+	result, err := userIdent.Authenticate(ctx, nil)
+	require.NoError(t, err)
+
+	awsCreds, ok := result.(*types.AWSCredentials)
+	require.True(t, ok)
+	assert.Equal(t, "AKID_FORCED_WEBFLOW", awsCreds.AccessKeyID)
+	assert.Equal(t, "TOKEN_FORCED_WEBFLOW", awsCreds.SessionToken)
+
+	storedCreds, err := store.Retrieve(identityName, "")
+	require.NoError(t, err)
+	assert.Equal(t, keyringCreds, storedCreds, "forced webflow must not overwrite IAM credentials in the keyring")
+
+	cachedCreds, err := userIdent.LoadCredentials(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "AKID_FORCED_WEBFLOW", cachedCreds.(*types.AWSCredentials).AccessKeyID,
+		"forced webflow must replace the temporary AWS session-file cache")
+}
+
+func TestUserIdentity_Authenticate_ForceWebflowDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	identity, err := NewUserIdentity("test-force-webflow-disabled", &schema.Identity{
+		Kind: "aws/user",
+		Credentials: map[string]any{
+			"webflow_enabled": false,
+			"region":          "us-east-1",
+		},
+	})
+	require.NoError(t, err)
+	userIdent := identity.(*userIdentity)
+	require.NoError(t, userIdent.writeAWSFiles(&types.AWSCredentials{
+		AccessKeyID: "AKID_CACHED_SESSION", SecretAccessKey: "SECRET_CACHED_SESSION", SessionToken: "CACHED_TOKEN",
+		Region: "us-east-1", Expiration: time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+	}, "us-east-1"))
+
+	result, err := userIdent.Authenticate(types.WithForceAWSWebflow(context.Background(), true), nil)
+	if result != nil {
+		t.Fatalf("forced webflow error must return a nil credentials interface, got %T", result)
+	}
+	assert.ErrorIs(t, err, errUtils.ErrWebflowDisabled,
+		"--webflow must honor webflow_enabled: false even when a cached session is valid")
+}
+
+func TestUserIdentity_WebflowHelpersPropagateErrorsAndPersistSessions(t *testing.T) {
+	t.Run("normal webflow returns browser errors", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ATMOS_XDG_CONFIG_HOME", tmpDir)
+		t.Setenv("ATMOS_XDG_CACHE_HOME", tmpDir)
+
+		identity, err := NewUserIdentity("webflow-error", &schema.Identity{Kind: "aws/user"})
+		require.NoError(t, err)
+
+		result, err := identity.Authenticate(types.WithAllowPrompts(context.Background(), false), nil)
+		assert.Nil(t, result)
+		assert.ErrorIs(t, err, errUtils.ErrWebflowAuthFailed)
+	})
+
+	t.Run("forced browser flow returns prompt errors", func(t *testing.T) {
+		identity, err := NewUserIdentity("forced-webflow-error", &schema.Identity{Kind: "aws/user"})
+		require.NoError(t, err)
+
+		creds, err := identity.(*userIdentity).authenticateViaBrowserWebflow(types.WithAllowPrompts(context.Background(), false))
+		assert.Nil(t, creds)
+		assert.ErrorIs(t, err, errUtils.ErrWebflowAuthFailed)
+	})
+
+	t.Run("webflow resolver returns disabled error", func(t *testing.T) {
+		identity, err := NewUserIdentity("webflow-disabled", &schema.Identity{
+			Kind: "aws/user", Credentials: map[string]any{"webflow_enabled": false},
+		})
+		require.NoError(t, err)
+
+		creds, err := identity.(*userIdentity).authenticateViaWebflow(context.Background())
+		assert.Nil(t, creds)
+		assert.ErrorIs(t, err, errUtils.ErrWebflowDisabled)
+	})
+
+	t.Run("persistence fills region and reports write failures", func(t *testing.T) {
+		identity, err := NewUserIdentity("webflow-persist", &schema.Identity{Kind: "aws/user"})
+		require.NoError(t, err)
+		userIdent := identity.(*userIdentity)
+
+		configHome := t.TempDir()
+		t.Setenv("ATMOS_XDG_CONFIG_HOME", configHome)
+		creds, err := userIdent.persistWebflowCredentials(&types.AWSCredentials{
+			AccessKeyID: "AKID", SecretAccessKey: "SECRET", SessionToken: "TOKEN",
+		}, "us-west-2")
+		require.NoError(t, err)
+		assert.Equal(t, "us-west-2", creds.Region)
+
+		blockedPath := filepath.Join(t.TempDir(), "not-a-directory")
+		require.NoError(t, os.WriteFile(blockedPath, []byte("blocked"), 0o600))
+		t.Setenv("ATMOS_XDG_CONFIG_HOME", blockedPath)
+		creds, err = userIdent.persistWebflowCredentials(&types.AWSCredentials{
+			AccessKeyID: "AKID", SecretAccessKey: "SECRET", SessionToken: "TOKEN", Region: "us-west-2",
+		}, "us-west-2")
+		assert.Nil(t, creds)
+		assert.ErrorIs(t, err, errUtils.ErrAwsAuth)
+	})
 }
 
 // TestUserIdentity_Authenticate_PartialYAMLCredsSurfacesConfigError verifies
@@ -2607,4 +2762,38 @@ func TestUserIdentity_credentialStore_FallsBackWhenNotInjected(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, "AKIAFALLBACK", got.AccessKeyID)
+}
+
+// TestUser_generateSessionToken_PromptUnavailableMessage reproduces a chained login in a session that
+// cannot show the MFA prompt. The message must read as one sentinel plus the real cause, not as
+// "authentication failed" glued onto "interactive authentication prompt unavailable".
+func TestUser_generateSessionToken_PromptUnavailableMessage(t *testing.T) {
+	id, err := NewUserIdentity("ft-user", &schema.Identity{Kind: "aws/user"})
+	require.NoError(t, err)
+	ui := id.(*userIdentity)
+
+	old := promptMfaTokenFunc
+	defer func() { promptMfaTokenFunc = old }()
+	promptMfaTokenFunc = func(_ *types.AWSCredentials) (string, error) { return "", errUtils.ErrAuthPromptUnavailable }
+
+	creds := &types.AWSCredentials{
+		AccessKeyID:     "AKIAFAKEFAKEFAKEFAKE",
+		SecretAccessKey: "fake-secret",
+		MfaArn:          "arn:aws:iam::111111111111:mfa/me",
+	}
+	_, err = ui.generateSessionToken(context.Background(), creds, "us-east-1")
+	require.Error(t, err)
+
+	wrapped := errUtils.WrapAuthenticationFailed(
+		errUtils.WrapAuthenticationFailed(err, "identity %q", "ft-user"), "identity %q", "ft-role",
+	)
+
+	assert.Equal(t,
+		`authentication failed for identity "ft-role" via identity "ft-user": interactive authentication prompt unavailable: requires a TTY`,
+		wrapped.Error())
+	assert.NotContains(t, err.Error(), "\n")
+	assert.ErrorIs(t, err, errUtils.ErrAuthenticationFailed)
+	assert.ErrorIs(t, wrapped, errUtils.ErrAuthenticationFailed)
+	assert.ErrorIs(t, wrapped, errUtils.ErrAuthPromptUnavailable)
+	assert.ErrorIs(t, wrapped, errUtils.ErrTTYRequired)
 }

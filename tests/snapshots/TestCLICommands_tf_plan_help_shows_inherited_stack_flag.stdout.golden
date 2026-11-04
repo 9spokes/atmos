@@ -1,11 +1,9 @@
 
 👽 test darwin/arm64
 
-Generate an execution plan, which shows what actions Terraform will take to
-reach the desired state of the configuration.
+Generate an execution plan, which shows what actions Terraform will take to reach the desired state of the configuration.
 
-This command shows what Terraform will do when you run 'apply'. It helps you
-verify changes before making them to your infrastructure.
+This command shows what Terraform will do when you run 'apply'. It helps you verify changes before making them to your infrastructure.
 
 For complete Terraform/OpenTofu documentation, see:
 https://developer.hashicorp.com/terraform/cli/commands/plan
@@ -13,18 +11,18 @@ https://opentofu.org/docs/cli/commands/plan
 
 USAGE
 
-                                    
-    $ atmos terraform plan [flags]  
-                                    
+
+    $ atmos terraform plan [flags]
+
 
 EXAMPLES
 
-                                                              
-    – Execute a terraform plan                                
-                                                              
-                                                              
-     $ atmos terraform plan <component-name> -s <stack-name>  
-                                                              
+
+    – Execute a terraform plan
+
+
+     $ atmos terraform plan <component-name> -s <stack-name>
+
 
 FLAGS
 
@@ -46,7 +44,13 @@ FLAGS
 
       --hide strings                       Hide Terraform plan output sections. Supported values: no-changes
 
+      --init-mode string                   Override init.mode from atmos.yaml (auto, always, never)
+
+      --init-reconfigure string            Override init.reconfigure from atmos.yaml (auto, always, never)
+
       --init-run-reconfigure string        Override init_run_reconfigure setting from atmos.yaml (true/false)
+
+      --init-upgrade string                Override init.upgrade from atmos.yaml (auto, always, never)
 
       --log-order string                   Order concurrent Terraform plan logs. Supported values: stream, grouped
                                            (default stream)
@@ -71,10 +75,16 @@ GLOBAL FLAGS
 
       --base-path string                     Base path for Atmos project
 
+      --cast string                          Record command output as an asciinema cast (--cast for generated path, --
+                                             cast=path with a .cast, .gif, .mp4, .html, .ascii, .png, .jpg, or .jpeg
+                                             extension for explicit output)
+
   -C, --chdir string                         Change working directory before executing the command (run as if Atmos
                                              started in this directory)
 
       --clone-target-ref                     Clone the target reference with which to compare the current branch
+
+      --command string                       Executable name or path for this component invocation
 
       --components strings                   Filter by specific components
 
@@ -82,7 +92,16 @@ GLOBAL FLAGS
 
       --config-path strings                  Paths to search for Atmos configuration (comma-separated or repeated flag)
 
+      --docs string                          Open command documentation (--docs=md renders it in the terminal)
+
       --dry-run                              Perform dry run without making actual changes
+
+      --edition string                       Pin defaults to a date-anchored edition (YYYY, YYYY-MM, or YYYY-MM-DD)
+
+      --example                              Select and initialize a related example (prints install commands without
+                                             a terminal)
+
+      --explain                              Explain policy decisions on stderr without changing execution
 
       --force-color                          Force color output even when not a TTY (useful for screenshots)
 
@@ -98,8 +117,13 @@ GLOBAL FLAGS
   -i, --identity string                      Specify the identity to authenticate to before running Terraform
                                              commands. Use without value to interactively select.
 
-      --include-dependents                   For each affected component, detect the dependent components and process
-                                             them in the dependency order
+      --include-dependencies string          Also process everything the selected components depend on (their
+                                             prerequisites), in dependency order (reversed for destroy). Optionally
+                                             bound the expansion: --include-dependencies=N
+
+      --include-dependents string            Also process everything that depends on the selected components, in
+                                             dependency order (reversed for destroy). Optionally bound the expansion: --
+                                             include-dependents=N
 
       --init-pass-vars                       Pass the generated varfile to terraform init using --var-file flag (OpenTofu
                                              feature)
@@ -107,6 +131,17 @@ GLOBAL FLAGS
       --interactive                          Enable interactive prompts for missing required flags, optional value
                                              flags using the sentinel pattern, and missing positional arguments
                                              (requires TTY, disabled in CI) (default true)
+
+      --justification string                 Reason recorded for privileged auth actions such as PIM role activation (--
+                                             justification=REASON)
+
+      --labels stringArray                   Filter by labels (comma-separated key=value or key:value pairs within an
+                                             occurrence, and/or repeated, matches all): --labels=cost-
+                                             center=platform,compliance=sox or --labels cost-center=platform --labels
+                                             compliance=sox
+
+      --logs-color                           Enable log color when available; --no-color and NO_COLOR always override
+                                             (default true)
 
       --logs-file string                     The file to write Atmos logs to. Logs can be written to any file or any
                                              standard file descriptor, including '/dev/stdout', '/dev/stderr' and
@@ -175,6 +210,17 @@ GLOBAL FLAGS
 
   -s, --stack string                         Stack name
 
+      --tags strings                         Filter by tags (comma-separated, matches any): --tags=production,tier-1
+
+      --terraform-command string             Compatibility alias for --command
+
+      --ui                                   Enable streaming UI mode for real-time resource status display
+
+      --use-mocks string                     Resolve Terraform state/output YAML functions from component mocks. Set a
+                                             mode with =fallback (real state first, mocks only when missing) or
+                                             =always (mocks only); a bare flag uses components.terraform.mocks.mode.
+                                             Supported only by plan and describe commands
+
       --use-version string                   Use a specific version of Atmos (e.g., --use-version=1.160.0)
 
   -v, --verbose                              Enable verbose error output with full context, stack traces, and detailed
@@ -203,3 +249,5 @@ COMPATIBILITY FLAGS
       -var                  Set a value for one of the input variables
       -var-file             Load variable values from the given file
 
+
+  Documentation: https://atmos.tools/cli/commands/terraform/plan

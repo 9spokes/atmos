@@ -11,17 +11,20 @@ import (
 // This file tests additional registry functionality.
 
 func TestRegistryGet(t *testing.T) {
+	t.Parallel()
+
 	// Test Get for existing handlers.
 	existingHandlers := []string{
 		"shell", "atmos", "input", "confirm", "choose", "filter",
-		"file", "write", "toast", "alert", "title", "clear",
+		"file", "write", "toast", "hint", "alert", "title", "clear",
 		"linebreak", "markdown", "spin", "table", "pager",
 		"format", "join", "style", "log", "env", "exit",
-		"stage", "sleep",
+		"stage", "sleep", "say",
 	}
 
 	for _, name := range existingHandlers {
 		t.Run("get_"+name, func(t *testing.T) {
+			t.Parallel()
 			handler, ok := Get(name)
 			assert.True(t, ok, "handler %s should exist", name)
 			assert.NotNil(t, handler)
@@ -30,6 +33,7 @@ func TestRegistryGet(t *testing.T) {
 	}
 
 	t.Run("get non-existent handler", func(t *testing.T) {
+		t.Parallel()
 		handler, ok := Get("non_existent_handler_xyz")
 		assert.False(t, ok)
 		assert.Nil(t, handler)
@@ -37,6 +41,8 @@ func TestRegistryGet(t *testing.T) {
 }
 
 func TestRegistryList(t *testing.T) {
+	t.Parallel()
+
 	handlers := List()
 
 	// Verify the returned map is not nil.
@@ -52,6 +58,8 @@ func TestRegistryList(t *testing.T) {
 }
 
 func TestRegistryListByCategory(t *testing.T) {
+	t.Parallel()
+
 	byCategory := ListByCategory()
 
 	// Verify all categories are present.
@@ -75,12 +83,15 @@ func TestRegistryListByCategory(t *testing.T) {
 	assert.True(t, categoryHas(CategoryOutput, "spin"))
 	assert.True(t, categoryHas(CategoryOutput, "table"))
 	assert.True(t, categoryHas(CategoryUI, "toast"))
+	assert.True(t, categoryHas(CategoryUI, "hint"))
 	assert.True(t, categoryHas(CategoryUI, "title"))
 	assert.True(t, categoryHas(CategoryCommand, "shell"))
 	assert.True(t, categoryHas(CategoryCommand, "atmos"))
 }
 
 func TestRegistryCount(t *testing.T) {
+	t.Parallel()
+
 	count := Count()
 
 	// Should have at least the core handlers registered.
@@ -88,6 +99,8 @@ func TestRegistryCount(t *testing.T) {
 }
 
 func TestRegistryRegister(t *testing.T) {
+	t.Parallel()
+
 	// Count before registration.
 	countBefore := Count()
 
@@ -104,6 +117,8 @@ func TestRegistryRegister(t *testing.T) {
 }
 
 func TestStepCategory(t *testing.T) {
+	t.Parallel()
+
 	// Verify category constants.
 	assert.Equal(t, StepCategory("interactive"), CategoryInteractive)
 	assert.Equal(t, StepCategory("output"), CategoryOutput)
@@ -112,11 +127,14 @@ func TestStepCategory(t *testing.T) {
 }
 
 func TestHandlerInterface(t *testing.T) {
+	t.Parallel()
+
 	// Verify all handlers implement the interface correctly.
 	handlers := List()
 
 	for name, handler := range handlers {
 		t.Run("interface_"+name, func(t *testing.T) {
+			t.Parallel()
 			// GetName should return the handler name.
 			assert.Equal(t, name, handler.GetName())
 

@@ -61,3 +61,18 @@ var DevcontainerConfigUsageMarkdown string
 //
 //go:embed atmos_devcontainer_shell_usage.md
 var DevcontainerShellUsageMarkdown string
+
+// AtmosGitMarkdown contains the long description for the git command group.
+//
+//go:embed atmos_git_usage.md
+var AtmosGitMarkdown string
+
+// CastRenderUsageMarkdown contains usage examples for the cast render command.
+//
+//go:embed atmos_cast_render_usage.md
+var CastRenderUsageMarkdown string
+
+// CastRecordUsageMarkdown contains usage examples for the cast record command.
+//
+//go:embed atmos_cast_record_usage.md
+var CastRecordUsageMarkdown string

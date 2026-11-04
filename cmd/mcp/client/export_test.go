@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	errUtils "github.com/cloudposse/atmos/errors"
 	mcpclient "github.com/cloudposse/atmos/pkg/mcp/client"
 	"github.com/cloudposse/atmos/pkg/schema"
 )
@@ -45,22 +46,21 @@ func TestExportCmd_NoArgs(t *testing.T) {
 	assert.NotNil(t, exportCmd.Args, "Args validator should be set")
 }
 
-// TestExport_DelegatesToPackageGenerator is the structural regression
-// guard for issue #1. Before the fix, cmd/mcp/client/export.go had its
-// own private mcpJSONConfig/mcpJSONServer types and its own
-// buildMCPJSONEntry that omitted toolchain PATH injection. After the
-// fix, export.go consumes pkg/mcp/client.GenerateMCPConfig, which means
-// the contract this test pins is:
+// TestExport_DelegatesToPackageGenerator is the structural regression guard
+// for issue #1. Before the fix, cmd/mcp/client/export.go had its own private
+// mcpJSONConfig/mcpJSONServer types and its own buildMCPJSONEntry. After the
+// fix, export.go consumes pkg/mcp/client.GenerateMCPConfig directly, so the
+// contract this test pins is:
 //
 //  1. Identity-having servers get wrapped with `atmos auth exec`.
 //  2. Non-identity servers use their command directly.
-//  3. When a non-empty toolchainPATH is passed, every server's env carries
-//     PATH (the headline bug fix — IDE-spawned subprocesses can now find
-//     toolchain-managed `uvx` / `npx`).
-//
-// If a future refactor reverts export.go to a private builder that
-// drops the toolchainPATH parameter, this test catches it because the
-// PATH assertion will fail.
+//  3. GenerateMCPConfig's toolchainPATH parameter, when non-empty, still
+//     injects PATH into every server's env -- exercised here directly since
+//     `atmos mcp export` itself always passes "" (see executeMCPExport):
+//     the exported command is Atmos's own toolchain-aware CLI, which
+//     resolves terraform/tofu/etc. at runtime regardless of inherited PATH,
+//     so baking an install-time PATH snapshot into the file only made it
+//     non-portable across contributors' machines.
 func TestExport_DelegatesToPackageGenerator(t *testing.T) {
 	servers := map[string]schema.MCPServerConfig{
 		"aws-docs": {
@@ -142,31 +142,6 @@ func TestExport_JSONShapeMatchesContract(t *testing.T) {
 	assert.Contains(t, output, `"auth"`)
 	// aws-docs has no env — omitempty must exclude the env field.
 	assert.NotContains(t, output, `"env": null`)
-}
-
-// TestBuildToolchainPATH_NoToolchainReturnsEmpty exercises buildToolchainPATH
-// directly with an AtmosConfiguration that has no `.tool-versions` and no
-// terraform components. Both fallback chains return nil → "". This is the
-// precondition that lets `atmos mcp export` skip PATH injection on simple
-// projects rather than writing a bogus empty PATH= entry.
-func TestBuildToolchainPATH_NoToolchainReturnsEmpty(t *testing.T) {
-	tempDir := t.TempDir()
-	atmosConfig := &schema.AtmosConfiguration{
-		BasePath: tempDir,
-		Stacks: schema.Stacks{
-			BasePath: "stacks",
-		},
-		Components: schema.Components{
-			Terraform: schema.Terraform{
-				BasePath: "components/terraform",
-			},
-		},
-	}
-
-	got := buildToolchainPATH(atmosConfig)
-
-	assert.Equal(t, "", got,
-		"buildToolchainPATH must return \"\" when no toolchain resolves so the export skips PATH injection")
 }
 
 // newExportTestCmd builds a cobra.Command with the same flag surface that
@@ -310,26 +285,24 @@ func TestExecuteMCPExport_OverwritesExistingFile(t *testing.T) {
 		"expected JSON content; got %q", string(data))
 }
 
-// TestExecuteMCPExport_WriteFailure_NonExistentDir verifies the
-// os.WriteFile error path is reached and wrapped with the right
-// sentinel. Without this, an export pointing at a missing directory
-// would surface a bare os.PathError that callers can't programmatically
-// match against errUtils.ErrMCPConfigWriteFailed.
-func TestExecuteMCPExport_WriteFailure_NonExistentDir(t *testing.T) {
+func TestExecuteMCPExportCreatesParentDirectories(t *testing.T) {
 	writeMinimalAtmosYAMLForExport(t, `    atmos:
       command: atmos
       args: ["mcp", "start"]
 `)
+	outputPath := filepath.Join(t.TempDir(), "nested", "client", "mcp.json")
+	require.NoError(t, executeMCPExport(newExportTestCmd(t, outputPath), nil))
+	content, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	require.True(t, json.Valid(content))
+}
 
-	// /does-not-exist/.../out.mcp.json — WriteFile fails because the
-	// parent directory doesn't exist.
-	outputPath := filepath.Join(t.TempDir(), "does", "not", "exist", "out.mcp.json")
-	cmd := newExportTestCmd(t, outputPath)
-
-	err := executeMCPExport(cmd, nil)
-	require.Error(t, err, "writing to a non-existent directory must return an error")
-	// Normalize separators so the assertion works on Windows (where
-	// filepath.Join uses `\`) as well as Unix.
-	assert.Contains(t, filepath.ToSlash(err.Error()), "does/not/exist",
-		"error must include the offending path for actionable diagnostics; got: %v", err)
+func TestExecuteMCPExportWriteFailureParentIsFile(t *testing.T) {
+	writeMinimalAtmosYAMLForExport(t, `    atmos:
+      command: atmos
+`)
+	parent := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(parent, []byte("unchanged"), 0o600))
+	err := executeMCPExport(newExportTestCmd(t, filepath.Join(parent, "config.json")), nil)
+	require.ErrorIs(t, err, errUtils.ErrMCPConfigWriteFailed)
 }

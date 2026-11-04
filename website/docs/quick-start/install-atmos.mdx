@@ -7,12 +7,12 @@ id: install-atmos
 ---
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import Link from '@docusaurus/Link';
 import Intro from '@site/src/components/Intro'
 import LatestRelease from '@site/src/components/LatestRelease'
 import File from '@site/src/components/File'
 import CodeBlock from '@theme/CodeBlock';
 import InstallWidget from '@site/src/components/InstallWidget'
+import ActionCard from '@site/src/components/ActionCard'
 
 <InstallWidget />
 
@@ -23,6 +23,24 @@ There are many ways to install Atmos. Choose the method that works best for you!
 To check what version of Atmos you have installed, just run `atmos version`. The latest version of Atmos is <LatestRelease />.
 
 To find the latest available version of Atmos, visit the [Releases Page](https://github.com/cloudposse/atmos/releases). The latest version will always be available for download here.
+
+## Release Platforms
+
+Prebuilt downloads for new releases cover amd64 and arm64 on Linux, macOS, and Windows.
+Linux DEB, RPM, and APK packages cover those same two architectures.
+
+Prebuilt downloads for Linux 386, Linux 32-bit ARM, and FreeBSD amd64 and arm64 are being retired.
+On those platforms, [install with Go](#install-with-go) to build Atmos locally:
+
+```shell
+go install github.com/cloudposse/atmos@latest
+```
+
+Install a Go toolchain compatible with your platform and the selected Atmos release, and add its binary
+installation directory to your `PATH` (`GOBIN`, or `GOPATH/bin` when `GOBIN` is unset; usually `$HOME/go/bin`).
+For a specific release, replace `@latest` with its tag. Download-based installers and version switching
+require prebuilt assets; use Go to install the desired version on these platforms instead.
+Previously published downloads remain available. See the [platform retirement announcement](/changelog/release-platform-downloads).
 
 ## Using OS Package Managers
 
@@ -57,11 +75,11 @@ Atmos has native packages for macOS and every major Linux distribution. We also 
 
     ```shell
     # Add the Cloud Posse package repository hosted by Cloudsmith
-    apt-get update && apt-get install -y apt-utils curl
-    curl -1sLf 'https://dl.cloudsmith.io/public/cloudposse/packages/cfg/setup/bash.deb.sh' │ bash
+    sudo apt-get update && sudo apt-get install -y apt-utils curl
+    curl -1sLf 'https://dl.cloudsmith.io/public/cloudposse/packages/cfg/setup/bash.deb.sh' | sudo bash
 
     # Install atmos
-    apt-get install atmos@="${ATMOS_VERSION}-*"
+    sudo apt-get install atmos="${ATMOS_VERSION}-*"
     ```
   </TabItem>
 
@@ -71,7 +89,7 @@ Atmos has native packages for macOS and every major Linux distribution. We also 
     On RedHat or CentOS, use the Cloud Posse package repository provided by Cloudsmith:
 
     ```shell
-    curl -1sLf 'https://dl.cloudsmith.io/public/cloudposse/packages/setup.rpm.sh' │ sudo -E bash
+    curl -1sLf 'https://dl.cloudsmith.io/public/cloudposse/packages/setup.rpm.sh' | sudo -E bash
 
     # Install atmos
     sudo yum install atmos-${ATMOS_VERSION}.x86_64
@@ -85,7 +103,7 @@ Atmos has native packages for macOS and every major Linux distribution. We also 
 
     ```shell
     # Install the Cloud Posse package repository hosted by Cloudsmith
-    curl -fsSL 'https://dl.cloudsmith.io/public/cloudposse/packages/setup.alpine.sh' │ bash
+    curl -fsSL 'https://dl.cloudsmith.io/public/cloudposse/packages/setup.alpine.sh' | bash
 
     # Install atmos
     apk add atmos@cloudposse
@@ -208,18 +226,12 @@ Atmos has a few other ways to install, including using Go, asdf, mise, aqua, bui
     Install the latest version:
 
     ```shell
-    go install github.com/cloudposse/atmos
+    go install github.com/cloudposse/atmos@latest
     ```
 
     Grab a specific version:
 
     <CodeBlock language="shell">go install github.com/cloudposse/atmos@<LatestRelease /></CodeBlock>
-
-    Or specifically request the latest version.
-
-    ```shell
-    go install github.com/cloudposse/atmos@latest
-    ```
 
     __NOTE:__ Since the version is passed in via `-ldflags` during the build, when running `go install` without using `-ldflags`, the CLI will return `0.0.1` when running `atmos version`.
   </TabItem>
@@ -399,7 +411,11 @@ We recommend the "Fira Code" NerdFont version, which is what all our screenshots
 
 ## Next Steps
 
-Now, try one of our Quick Start guides to get started with Atmos
-
-<Link to="/quick-start/simple" className="button button--lg button--primary"><p>Simple Tutorial</p></Link>
-<Link to="/quick-start/advanced" className="button button--lg button--outline button--primary ml20"><p>Advanced Tutorial</p></Link>
+<ActionCard
+  title="Choose a Quick Start"
+  primaryCtaText="Simple Tutorial"
+  primaryCtaLink="/quick-start/simple"
+  secondaryCtaText="Advanced Tutorial"
+  secondaryCtaLink="/quick-start/advanced">
+  Now, try one of our Quick Start guides to get started with Atmos.
+</ActionCard>

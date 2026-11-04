@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/auth"
 	awsCloud "github.com/cloudposse/atmos/pkg/auth/cloud/aws"
@@ -17,6 +18,7 @@ import (
 	"github.com/cloudposse/atmos/pkg/auth/types"
 	"github.com/cloudposse/atmos/pkg/auth/validation"
 	cfg "github.com/cloudposse/atmos/pkg/config"
+	pkgFlags "github.com/cloudposse/atmos/pkg/flags"
 	"github.com/cloudposse/atmos/pkg/perf"
 	"github.com/cloudposse/atmos/pkg/schema"
 	"github.com/cloudposse/atmos/pkg/ui"
@@ -160,7 +162,7 @@ func executePublicLoginWithIdentity(ctx context.Context, atmosConfig *schema.Atm
 
 	whoami, err := authManager.Authenticate(ctx, identityName)
 	if err != nil {
-		return fmt.Errorf(errUtils.ErrWrapWithNameAndCauseFormat, errUtils.ErrIdentityAuthFailed, identityName, err)
+		return errUtils.WrapIdentityAuthFailed(identityName, err)
 	}
 	if whoami.Credentials == nil {
 		return fmt.Errorf(errUtils.ErrWrapWithNameAndCauseFormat, errUtils.ErrIdentityAuthFailed, identityName, errUtils.ErrIdentityCredentialsNone)
@@ -281,11 +283,7 @@ func executeExplicitRegistries(ctx context.Context, registries []string) error {
 func resolveSelectedIdentity(authManager auth.AuthManager, identityName string) (string, error) {
 	defer perf.Track(nil, "aws.ecr.resolveSelectedIdentity")()
 
-	if identityName != cfg.IdentityFlagSelectValue {
-		return identityName, nil
-	}
-
-	selected, err := authManager.GetDefaultIdentity(true)
+	selected, err := auth.ResolveSelectedIdentity(authManager, identityName, cfg.IdentityFlagSelectValue)
 	if err != nil {
 		// User explicitly aborted (Ctrl+C/ESC) — surface a clean SIGINT exit.
 		if errors.Is(err, errUtils.ErrUserAborted) {
@@ -309,15 +307,10 @@ var createAuthManager = func(authConfig *schema.AuthConfig, cliConfigPath string
 }
 
 func init() {
-	// Add --identity flag locally since this command is outside the auth command tree.
-	loginCmd.Flags().StringP("identity", "i", "", "Specify the target identity to use for linked integrations.")
-
-	// Set NoOptDefVal to enable optional flag value.
-	// When --identity is used without a value, it will receive IdentityFlagSelectValue.
-	identityFlag := loginCmd.Flags().Lookup("identity")
-	if identityFlag != nil {
-		identityFlag.NoOptDefVal = cfg.IdentityFlagSelectValue
-	}
+	// Add --identity flag locally since this command is outside the auth command tree. Uses the
+	// shared flags.WithIdentityFlag() builder (rather than a hand-rolled Flags().StringP() +
+	// manual NoOptDefVal patch) so it stays in sync with the one canonical --identity definition.
+	pkgFlags.NewStandardParser(pkgFlags.WithIdentityFlag()).RegisterFlags(loginCmd)
 
 	// Add --registry as a local flag specific to login.
 	loginCmd.Flags().StringArrayP("registry", "r", nil, "ECR registry URL(s) - explicit mode")
@@ -327,4 +320,8 @@ func init() {
 	loginCmd.Flags().Bool("public", false, "Login to AWS ECR Public (public.ecr.aws)")
 
 	EcrCmd.AddCommand(loginCmd)
+	internal.RegisterCommandMetadata(
+		loginCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/aws/ecr-login"),
+	)
 }

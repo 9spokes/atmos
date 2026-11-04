@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudposse/atmos/pkg/schema"
 	"github.com/cloudposse/atmos/pkg/store"
+	"github.com/cloudposse/atmos/pkg/store/providers"
 )
 
 func TestProcessTagStoreGet(t *testing.T) {
@@ -24,7 +25,7 @@ func TestProcessTagStoreGet(t *testing.T) {
 	t.Setenv("ATMOS_REDIS_URL", redisUrl)
 
 	// Create a new Redis store
-	redisStore, err := store.NewRedisStore(store.RedisStoreOptions{
+	redisStore, err := providers.NewRedisStore(providers.RedisStoreOptions{
 		URL: &redisUrl,
 	})
 	assert.NoError(t, err)
@@ -42,7 +43,7 @@ func TestProcessTagStoreGet(t *testing.T) {
 
 	// Add some arbitrary keys directly in Redis for testing GetKey
 	// We need to access the Redis client directly to set arbitrary keys
-	redisClient := redisStore.(*store.RedisStore).RedisClient()
+	redisClient := redisStore.(*providers.RedisStore).RedisClient()
 
 	// Set arbitrary keys directly in Redis
 	globalConfig := map[string]interface{}{
@@ -73,6 +74,18 @@ func TestProcessTagStoreGet(t *testing.T) {
 			input:        "!store.get redis shared-secret",
 			currentStack: "prod",
 			expected:     "my-secret-value",
+		},
+		{
+			name:         "tab after tag in untagged string",
+			input:        "!store.get\tredis shared-secret",
+			currentStack: "prod",
+			expected:     "my-secret-value",
+		},
+		{
+			name:         "mixed whitespace after tag with query",
+			input:        "!store.get \t redis global-config | query .region",
+			currentStack: "dev",
+			expected:     "us-east-1",
 		},
 		{
 			name:         "Test !store.get with query",

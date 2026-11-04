@@ -1,0 +1,19 @@
+commands:
+  - name: casts generate examples container-step build-run
+    description: Regenerate the Container Steps example cast
+    env: !include cast-defaults.yaml .env.command
+    steps:
+      - type: shell
+        name: setup
+        command: atmos casts setup
+      - type: script
+        name: record
+        source: scripts/casts/container-build-run.star
+  - name: casts validate examples container-step build-run
+    description: Validate the Container Steps example cast
+    steps:
+      - type: script
+        name: validate
+        env:
+          CAST_VALIDATE: 'true'
+        source: scripts/casts/container-build-run.star

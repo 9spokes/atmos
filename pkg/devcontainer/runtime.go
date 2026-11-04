@@ -16,38 +16,38 @@ import (
 )
 
 // DetectRuntime detects the container runtime based on settings.
-// If runtimeSetting is specified ("docker" or "podman"), it uses that.
+// If runtimeSetting is specified ("auto", "docker", or "podman"), it uses that.
 // Otherwise, it auto-detects the runtime.
 func DetectRuntime(runtimeSetting string) (container.Runtime, error) {
 	defer perf.Track(nil, "devcontainer.DetectRuntime")()
 
 	ctx := context.Background()
 
-	// If runtime is explicitly specified in settings, use it.
-	if runtimeSetting != "" {
-		switch runtimeSetting {
-		case "docker":
-			os.Setenv("ATMOS_CONTAINER_RUNTIME", "docker")
-		case "podman":
-			os.Setenv("ATMOS_CONTAINER_RUNTIME", "podman")
-		default:
-			return nil, errUtils.Build(errUtils.ErrInvalidDevcontainerConfig).
-				WithExplanationf("Invalid runtime setting `%s`", runtimeSetting).
-				WithHint("Runtime must be either `docker` or `podman`").
-				WithHint("Update the devcontainer configuration in `atmos.yaml` to use a valid runtime").
-				WithHint("See Atmos docs: https://atmos.tools/cli/commands/devcontainer/configuration/").
-				WithExample(`components:
+	// Config loading promotes the default container.runtime.auto_start setting to
+	// the runtime detector, so devcontainers share the same Podman recovery path
+	// as container components and workflow steps.
+	runtime, err := container.DetectRuntimeWithPreferenceAndRecovery(ctx, runtimeSetting, false)
+	if err == nil {
+		return runtime, nil
+	}
+
+	if runtimeSetting != "" && runtimeSetting != string(container.TypeAuto) && runtimeSetting != string(container.TypeDocker) && runtimeSetting != string(container.TypePodman) {
+		return nil, errUtils.Build(errUtils.ErrInvalidDevcontainerConfig).
+			WithExplanationf("Invalid runtime setting `%s`", runtimeSetting).
+			WithHint("Runtime must be `auto`, `docker`, or `podman`").
+			WithHint("Update the devcontainer configuration in `atmos.yaml` to use a valid runtime").
+			WithHint("See Atmos docs: https://atmos.tools/cli/commands/devcontainer/configuration/").
+			WithExample(`components:
   devcontainer:
     my-dev:
       settings:
-        runtime: docker  # or podman`).
-				WithContext("runtime_setting", runtimeSetting).
-				WithExitCode(2).
-				Err()
-		}
+        runtime: auto  # or docker, podman`).
+			WithContext("runtime_setting", runtimeSetting).
+			WithExitCode(2).
+			Err()
 	}
 
-	return container.DetectRuntime(ctx)
+	return nil, err
 }
 
 // ToCreateConfig converts a devcontainer config to container.CreateConfig.
@@ -78,7 +78,7 @@ func ToCreateConfig(config *Config, containerName, devcontainerName, instance st
 	}
 
 	createConfig.Mounts = convertMounts(config, cwd)
-	createConfig.Ports = convertPorts(config.ForwardPorts)
+	createConfig.Ports = convertPortsWithAttributes(config.ForwardPorts, config.PortsAttributes)
 
 	return createConfig
 }
@@ -134,23 +134,25 @@ func convertMounts(config *Config, cwd string) []container.Mount {
 }
 
 func convertPorts(forwardPorts []any) []container.PortBinding {
-	if len(forwardPorts) == 0 {
-		return nil
-	}
+	return convertPortsWithAttributes(forwardPorts, nil)
+}
 
-	ports := make([]container.PortBinding, 0, len(forwardPorts))
-
+func convertPortsWithAttributes(forwardPorts []any, attributes map[string]PortAttributes) []container.PortBinding {
+	var ports []container.PortBinding
 	for _, port := range forwardPorts {
-		portNum := parsePortNumber(port)
-		if portNum > 0 {
-			ports = append(ports, container.PortBinding{
-				ContainerPort: portNum,
-				HostPort:      portNum,
-				Protocol:      "tcp",
-			})
+		// JSON includes decode numbers as float64.
+		if number, ok := port.(float64); ok {
+			port = int(number)
+		}
+		binding, err := parsePort(port, attributes)
+		if err == nil {
+			// Dev Container application protocols use TCP Docker bindings.
+			if binding.Protocol == "http" || binding.Protocol == "https" {
+				binding.Protocol = "tcp"
+			}
+			ports = append(ports, binding)
 		}
 	}
-
 	return ports
 }
 

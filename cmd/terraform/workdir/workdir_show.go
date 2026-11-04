@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	errUtils "github.com/cloudposse/atmos/errors"
 	cfg "github.com/cloudposse/atmos/pkg/config"
 	"github.com/cloudposse/atmos/pkg/flags"
@@ -54,7 +55,8 @@ The output is formatted for human readability, similar to 'kubectl describe'.`,
 		}
 
 		// Get workdir info.
-		info, err := workdirManager.GetWorkdirInfo(&atmosConfig, component, stack)
+		componentConfig := resolveComponentConfig(&configInfo, component, stack)
+		info, err := workdirManager.GetWorkdirInfo(&atmosConfig, component, stack, componentConfig)
 		if err != nil {
 			return err
 		}
@@ -65,11 +67,12 @@ The output is formatted for human readability, similar to 'kubectl describe'.`,
 	},
 }
 
+// printShowHuman displays a workdir's source, location, and lifecycle metadata.
 func printShowHuman(info *WorkdirInfo) {
 	defer perf.Track(nil, "workdir.printShowHuman")()
 
 	// Display status indicator with colored checkmark.
-	statusIndicator := theme.Styles.Checkmark.String()
+	statusIndicator := theme.GetCurrentStyles().Checkmark.String()
 	ui.Writef("%s Workdir Status\n\n", statusIndicator)
 
 	// Determine source type display.
@@ -126,7 +129,7 @@ func printShowHuman(info *WorkdirInfo) {
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if col == 0 {
 				return lipgloss.NewStyle().
-					Foreground(lipgloss.Color(theme.ColorCyan)).
+					Foreground(lipgloss.Color(theme.GetCurrentColorScheme().Link)).
 					Padding(0, 1, 0, 2)
 			}
 			return lipgloss.NewStyle().Padding(0, 1)
@@ -150,4 +153,8 @@ func init() {
 	if err := showParser.BindToViper(viper.GetViper()); err != nil {
 		panic(err)
 	}
+	internal.RegisterCommandMetadata(
+		showCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/terraform/workdir/show"),
+	)
 }

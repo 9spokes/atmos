@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	"github.com/cloudposse/atmos/cmd/mcp/mcpcmd"
 	cfg "github.com/cloudposse/atmos/pkg/config"
 	"github.com/cloudposse/atmos/pkg/flags"
@@ -73,6 +74,10 @@ func init() {
 		panic(err)
 	}
 
+	internal.RegisterCommandMetadata(
+		listCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/mcp/list"),
+	)
 	mcpcmd.McpCmd.AddCommand(listCmd)
 }
 
@@ -97,8 +102,12 @@ func executeMCPList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	if nudge := atmosProNudge(&atmosConfig); nudge != "" {
+		ui.Info(nudge)
+	}
+
 	if len(atmosConfig.MCP.Servers) == 0 {
-		ui.Info("No MCP servers configured. Add servers under `mcp.servers` in `atmos.yaml`.")
+		ui.Info(noServersConfiguredMessage(atmosConfig.MCP.IsEnabled()))
 		return nil
 	}
 

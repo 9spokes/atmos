@@ -1,11 +1,13 @@
 package step
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/schema"
 )
 
@@ -14,11 +16,14 @@ import (
 
 //nolint:dupl // Similar test patterns for different handler methods.
 func TestChooseHandler_ResolveOptions(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("choose")
 	require.True(t, ok)
 	chooseHandler := handler.(*ChooseHandler)
 
 	t.Run("static options", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Options: []string{"option1", "option2", "option3"},
@@ -31,6 +36,7 @@ func TestChooseHandler_ResolveOptions(t *testing.T) {
 	})
 
 	t.Run("template options", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Options: []string{"{{ .steps.env.value }}", "staging", "development"},
@@ -44,6 +50,7 @@ func TestChooseHandler_ResolveOptions(t *testing.T) {
 	})
 
 	t.Run("empty options", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Options: []string{},
@@ -56,6 +63,7 @@ func TestChooseHandler_ResolveOptions(t *testing.T) {
 	})
 
 	t.Run("invalid template", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Options: []string{"valid", "{{ .steps.invalid.value"},
@@ -69,35 +77,40 @@ func TestChooseHandler_ResolveOptions(t *testing.T) {
 }
 
 func TestChooseHandler_ResolveDefault(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("choose")
 	require.True(t, ok)
 	chooseHandler := handler.(*ChooseHandler)
 
 	t.Run("no default", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Default: "",
 		}
 		vars := NewVariables()
 
-		defaultVal, err := chooseHandler.resolveDefault(step, vars)
+		defaultVal, err := chooseHandler.ResolveDefault(context.Background(), step, vars)
 		require.NoError(t, err)
 		assert.Empty(t, defaultVal)
 	})
 
 	t.Run("static default", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Default: "production",
 		}
 		vars := NewVariables()
 
-		defaultVal, err := chooseHandler.resolveDefault(step, vars)
+		defaultVal, err := chooseHandler.ResolveDefault(context.Background(), step, vars)
 		require.NoError(t, err)
 		assert.Equal(t, "production", defaultVal)
 	})
 
 	t.Run("template default", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Default: "{{ .steps.env.value }}",
@@ -105,30 +118,34 @@ func TestChooseHandler_ResolveDefault(t *testing.T) {
 		vars := NewVariables()
 		vars.Set("env", NewStepResult("staging"))
 
-		defaultVal, err := chooseHandler.resolveDefault(step, vars)
+		defaultVal, err := chooseHandler.ResolveDefault(context.Background(), step, vars)
 		require.NoError(t, err)
 		assert.Equal(t, "staging", defaultVal)
 	})
 
 	t.Run("invalid template", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Default: "{{ .steps.invalid.value",
 		}
 		vars := NewVariables()
 
-		_, err := chooseHandler.resolveDefault(step, vars)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to resolve default")
+		_, err := chooseHandler.ResolveDefault(context.Background(), step, vars)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errUtils.ErrTemplateEvaluation)
 	})
 }
 
 func TestChooseHandler_CreateChooseKeyMap(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("choose")
 	require.True(t, ok)
 	chooseHandler := handler.(*ChooseHandler)
 
 	t.Run("creates keymap", func(t *testing.T) {
+		t.Parallel()
 		keyMap := chooseHandler.createChooseKeyMap()
 		assert.NotNil(t, keyMap)
 		assert.NotNil(t, keyMap.Quit)

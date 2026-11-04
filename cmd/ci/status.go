@@ -1,9 +1,12 @@
 package ci
 
 import (
+	"sort"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	errUtils "github.com/cloudposse/atmos/errors"
 	cipkg "github.com/cloudposse/atmos/pkg/ci"
 	cfg "github.com/cloudposse/atmos/pkg/config"
@@ -106,9 +109,11 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 
 // getDefaultProvider returns a provider from the registry.
 // This is used when not running in CI but a provider is still available.
+// Names are sorted so selection is deterministic regardless of registry map
+// ordering (providers self-register from multiple init() functions).
 func getDefaultProvider() (cipkg.Provider, error) {
-	// Try to get any registered provider from the registry.
 	names := cipkg.List()
+	sort.Strings(names)
 	for _, name := range names {
 		p, err := cipkg.Get(name)
 		if err == nil {
@@ -299,4 +304,8 @@ func truncateSHA(sha string) string {
 func init() {
 	// Ensure the GitHub provider is registered by importing the package.
 	// The import above handles this.
+	internal.RegisterCommandMetadata(
+		statusCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/ci/status"),
+	)
 }

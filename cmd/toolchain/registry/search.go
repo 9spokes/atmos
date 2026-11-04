@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/cloudposse/atmos/cmd/internal"
 	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/data"
 	"github.com/cloudposse/atmos/pkg/flags"
@@ -67,6 +68,10 @@ func init() {
 	if err := searchParser.BindToViper(viper.GetViper()); err != nil {
 		panic(err)
 	}
+	internal.RegisterCommandMetadata(
+		searchCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/toolchain/registry/registry-search"),
+	)
 }
 
 // validateSearchFormat validates the search format flag.
@@ -404,7 +409,7 @@ func renderSearchTable(rows []searchRow, widths searchColumnWidths) string {
 	s := table.DefaultStyles()
 	s.Header = s.Header.
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color(theme.ColorBorder)).
+		BorderForeground(lipgloss.Color(theme.GetCurrentColorScheme().Border)).
 		BorderBottom(true).
 		Bold(true)
 	s.Cell = s.Cell.PaddingLeft(1).PaddingRight(1)

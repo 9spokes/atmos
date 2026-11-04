@@ -160,6 +160,17 @@ func isVersionLike(s string) bool {
 	return versionPattern.MatchString(s)
 }
 
+// ociScheme is the URI scheme of an OCI registry artifact.
+const ociScheme = "oci://"
+
+// IsOCIURI checks if the URI references an OCI registry artifact (oci://host/repo:tag).
+// It must be checked before IsGitURI, which can match hosts such as github.com inside an oci:// URI.
+func IsOCIURI(uri string) bool {
+	defer perf.Track(nil, "imports.IsOCIURI")()
+
+	return strings.HasPrefix(uri, ociScheme)
+}
+
 // IsGitURI checks if the URI appears to be a Git repository URL.
 // Detection rules:
 // 1. Explicit git:: prefix.
@@ -199,7 +210,11 @@ func IsGitURI(uri string) bool {
 	host := strings.ToLower(parsedURL.Host)
 	path := parsedURL.Path
 
-	// Check for known Git hosting platforms.
+	// Check for known Git hosting platforms. Deliberately github.com-only: this recognizes
+	// scheme-less shorthand ("github.com/org/repo"), and a GitHub Enterprise Server host is
+	// never guessable from a bare hostname the way github.com/gitlab.com/bitbucket.org are, so
+	// GHES users write a full URL (which IsHTTPURI/the .git-suffix checks below still catch)
+	// rather than relying on shorthand detection here.
 	knownHosts := []string{"github.com", "gitlab.com", "bitbucket.org"}
 	for _, knownHost := range knownHosts {
 		if host == knownHost || strings.HasSuffix(host, "."+knownHost) {

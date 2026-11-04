@@ -48,8 +48,7 @@ func NewProgressRenderer(workflow *schema.WorkflowDefinition, totalSteps int) *P
 		return nil
 	}
 
-	p := progress.New(
-		progress.WithDefaultGradient(),
+	p := ui.NewProgress(
 		progress.WithWidth(progressBarWidth),
 		progress.WithoutPercentage(),
 	)

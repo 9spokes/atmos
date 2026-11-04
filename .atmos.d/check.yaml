@@ -1,0 +1,98 @@
+commands:
+  - name: check
+    description: Read-only repository checks
+    working_directory: !repo-root .
+    commands:
+      - name: staged
+        description: Check staged files using the shared repository suite
+        flags:
+          - name: base-ref
+            type: string
+            default: origin/main
+            description: Base branch or commit for PR comparisons
+          - name: only
+            type: string
+            default: ""
+            description: Comma-separated check IDs (empty selects all applicable checks)
+          - name: skip
+            type: string
+            default: ""
+            description: Comma-separated checks covered by another CI job
+        steps:
+          - name: repository-checks
+            type: script
+            interpreter: starlark
+            script: |
+              load("scripts/checks/entry.star", "run")
+              run("staged", "check", ctx.flags["base-ref"], ctx.flags["only"], ctx.flags["skip"])
+
+      - name: pr
+        description: Check pr files using the shared repository suite
+        flags:
+          - name: base-ref
+            type: string
+            default: origin/main
+            description: Base branch or commit for PR comparisons
+          - name: only
+            type: string
+            default: ""
+            description: Comma-separated check IDs (empty selects all applicable checks)
+          - name: skip
+            type: string
+            default: ""
+            description: Comma-separated checks covered by another CI job
+        steps:
+          - name: repository-checks
+            type: script
+            interpreter: starlark
+            script: |
+              load("scripts/checks/entry.star", "run")
+              run("pr", "check", ctx.flags["base-ref"], ctx.flags["only"], ctx.flags["skip"])
+
+      - name: all
+        description: Check all files using the shared repository suite
+        flags:
+          - name: base-ref
+            type: string
+            default: origin/main
+            description: Base branch or commit for PR comparisons
+          - name: only
+            type: string
+            default: ""
+            description: Comma-separated check IDs (empty selects all applicable checks)
+          - name: skip
+            type: string
+            default: ""
+            description: Comma-separated checks covered by another CI job
+        steps:
+          - name: repository-checks
+            type: script
+            interpreter: starlark
+            script: |
+              load("scripts/checks/entry.star", "run")
+              run("all", "check", ctx.flags["base-ref"], ctx.flags["only"], ctx.flags["skip"])
+
+      - name: codecov
+        description: Validate codecov.yml configuration
+        steps:
+          - |
+            echo "Validating codecov.yml configuration..."
+
+            if [ ! -f codecov.yml ]; then
+              echo "codecov.yml not found"
+              exit 1
+            fi
+
+            RESULT=$(curl --silent --data-binary @codecov.yml https://codecov.io/validate 2>&1)
+
+            if echo "$RESULT" | grep -q "Valid"; then
+              echo "codecov.yml is valid"
+              echo ""
+              echo "$RESULT" | grep -E "(Valid|Error)"
+              exit 0
+            else
+              echo "codecov.yml validation failed"
+              echo ""
+              echo "$RESULT"
+              exit 1
+            fi

@@ -24,9 +24,7 @@ Note: Atmos will automatically call init for you when running plan and apply com
 For complete Terraform/OpenTofu documentation, see:
   https://developer.hashicorp.com/terraform/cli/commands/init
   https://opentofu.org/docs/cli/commands/init`,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return runHooks(h.BeforeTerraformInit, cmd, args)
-	},
+	PreRunE: prepareBeforeHooks,
 	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		// Reset the shared multi-component marker so PostRunE and the
 		// deferred error hook read consistent state even on an early return.
@@ -50,8 +48,8 @@ For complete Terraform/OpenTofu documentation, see:
 			return err
 		}
 
-		// Parse base terraform options.
-		opts, err := ParseTerraformRunOptions(v)
+		// Parse base terraform options with command context for UI flag detection.
+		opts, err := ParseTerraformRunOptions(v, cmd)
 		if err != nil {
 			return err
 		}
@@ -74,6 +72,16 @@ func init() {
 	// Create parser with init-specific flags.
 	initParser = flags.NewStandardParser(
 		WithBackendExecutionFlags(),
+		flags.WithBoolFlag("affected", "", false, "Initialize the affected components in dependency order"),
+		flags.WithBoolFlag("all", "", false, "Initialize all components in all stacks"),
+		flags.WithIntFlag("max-concurrency", "", 1, "Maximum number of Terraform init components to execute concurrently"),
+		flags.WithStringFlag("failure-mode", "", terraformFailureModeFailFast, "Terraform init failure handling mode. Supported values: fail-fast, keep-going"),
+		flags.WithStringFlag("log-order", "", "stream", "Order concurrent Terraform init logs. Supported values: stream, grouped"),
+		flags.WithEnvVars("affected", "ATMOS_TERRAFORM_INIT_AFFECTED"),
+		flags.WithEnvVars("all", "ATMOS_TERRAFORM_INIT_ALL"),
+		flags.WithEnvVars("max-concurrency", "ATMOS_TERRAFORM_INIT_MAX_CONCURRENCY"),
+		flags.WithEnvVars("failure-mode", "ATMOS_TERRAFORM_INIT_FAILURE_MODE"),
+		flags.WithEnvVars("log-order", "ATMOS_TERRAFORM_INIT_LOG_ORDER"),
 	)
 
 	// Register init-specific flags with Cobra.
@@ -92,4 +100,8 @@ func init() {
 
 	// Attach to parent terraform command.
 	terraformCmd.AddCommand(initCmd)
+	internal.RegisterCommandMetadata(
+		initCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/terraform/init"),
+	)
 }

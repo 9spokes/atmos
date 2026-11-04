@@ -1,6 +1,7 @@
-# Incorrect Usage
 
-**Error:** Unknown command non-existent for atmos
+Incorrect Usage
+
+Error: Unknown command non-existent for atmos
 
 Valid subcommands are:
 
@@ -10,25 +11,41 @@ Valid subcommands are:
   • atlantis
   • auth
   • aws
+  • azure
+  • cast
   • ci
   • completion
+  • composition
+  • config
+  • container
   • describe
   • devcontainer
   • docs
+  • doctor
+  • emulator
   • env
+  • gcp
+  • git
+  • helm
   • helmfile
   • help
+  • init
+  • kubernetes
   • list
   • lsp
   • mcp
   • packer
+  • plugin
+  • policy
   • pro
   • profile
-  • show
+  • sbom
+  • scaffold
+  • secret
+  • stack
+  • store
   • support
   • terraform
-  • tf
-  • tf-custom
   • theme
   • toolchain
   • validate
@@ -36,6 +53,11 @@ Valid subcommands are:
   • version
   • workflow
 
-## Hints
+## Usage
 
-💡 Run atmos --help for usage
+ atmos [flags]
+ atmos [sub-command] [flags]
+
+💡 Run atmos --help for usage.
+
+Documentation: https://atmos.tools

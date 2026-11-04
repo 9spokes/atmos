@@ -1,9 +1,10 @@
 ---
 name: atmos-stacks
-description: "Stack configuration: imports, inheritance, deep merging, locals, vars, settings, metadata, overrides"
+description: "Stack configuration: local and remote imports, inheritance, deep merging, locals, vars, settings, metadata, overrides, dependencies, and modernization"
 metadata:
   copyright: Copyright Cloud Posse, LLC 2026
   version: "1.0.0"
+  category: core-config
 ---
 
 # Atmos Stack Configuration
@@ -16,10 +17,20 @@ A stack manifest is a YAML file that declares components and their configuration
 
 Stacks are not Terraform workspaces, although Atmos derives workspace names from stack names. A single stack manifest can configure multiple components, and a single component can appear across many stacks with different variable values.
 
+## Related Skills
+
+| Need | Load |
+|---|---|
+| Local and remote import mechanics | [atmos-imports](../atmos-imports/SKILL.md) |
+| Modernizing legacy stack patterns | [atmos-modernization](../atmos-modernization/SKILL.md) |
+| YAML function inventory | [atmos-yaml-functions](../atmos-yaml-functions/SKILL.md) |
+| Component source provisioning | [atmos-components](../atmos-components/SKILL.md) |
+
 ## Stack Discovery
 
 Atmos discovers stack manifests based on `included_paths` and `excluded_paths` configured in the `stacks` section
-of `atmos.yaml`. For the complete `atmos.yaml` configuration reference, see the `atmos-config` skill.
+of `atmos.yaml`. For root config discovery and routing, see the `atmos-config` skill; for path layout
+and `base_path` behavior, see `atmos-project-layout`.
 
 ### Stack Name Precedence
 
@@ -27,7 +38,7 @@ Atmos resolves the stack name using this priority (highest first):
 
 1. `name` field in the stack manifest (explicit override).
 2. `name_template` in `atmos.yaml` (Go template).
-3. `name_pattern` in `atmos.yaml` (token pattern).
+3. Legacy `name_pattern` in `atmos.yaml` (migration-only; recommend `name_template` or explicit `name`).
 4. File basename (e.g., `prod.yaml` becomes `prod`).
 
 ## Stack Manifest Structure
@@ -43,6 +54,8 @@ import:
   - catalog/vpc/defaults
   - mixins/region/us-east-2
   - orgs/acme/plat/prod/_defaults
+  # Remote imports are supported, but they import stack config only:
+  # - github://acme/config/main/stacks/catalog/vpc.yaml
 
 # Global-scope sections (apply to all components)
 vars: {}
@@ -140,15 +153,21 @@ env:
 
 ### settings
 
-Integration metadata and configuration not passed to Terraform. Used for Spacelift, Atlantis, validation, and other Atmos integrations.
+Integration metadata and configuration not passed to Terraform. Used for Atlantis, validation, and other Atmos integrations.
 
 ```yaml
 settings:
-  spacelift:
-    workspace_enabled: true
-    autodeploy: false
-  depends_on:
-    - vpc
+  validation:
+    check-cidr:
+      schema_type: jsonschema
+      schema_path: schemas/vpc.json
+dependencies:
+  components:
+    - component: vpc
+    - component: dns-zone
+      stack: plat-ue2-prod
+    - kind: file
+      path: configs/service.yaml
 ```
 
 ### metadata
@@ -193,6 +212,26 @@ Override the executable for a component type or specific component. Useful for O
 ```yaml
 terraform:
   command: tofu
+```
+
+### flags
+
+Default values for terraform CLI execution flags (`lock_timeout`, `lock`, `parallelism`,
+`refresh`, `compact_warnings`). Settable in `atmos.yaml` (`components.terraform.flags`),
+at the stack level (root-level `terraform:` block), and per component — merged
+field-by-field, lowest to highest precedence. An explicit CLI-typed flag (`-- -lock-timeout=30s`)
+always wins over all three. Terraform-only; not every flag applies to every subcommand.
+
+```yaml
+terraform:
+  flags:
+    lock_timeout: "5m"
+
+components:
+  terraform:
+    vpc:
+      flags:
+        parallelism: 4
 ```
 
 ### backend
@@ -246,8 +285,9 @@ overrides:
   vars:
     custom_tag: override
   settings:
-    spacelift:
-      autodeploy: true
+    validation:
+      check-cidr:
+        schema_path: schemas/vpc-override.json
 ```
 
 ## Deep-Merge Behavior and Override Precedence
@@ -300,7 +340,9 @@ vars:
 
 ## Describing Stacks
 
-Use `atmos describe stacks` to view the fully resolved configuration after all imports, inheritance, and overrides:
+Use `atmos stack list` (alias of `atmos list stacks`) to list stack names and
+`atmos stack instances` (alias of `atmos list instances`) to list component instances across stacks.
+Use `atmos stack describe` (alias of `atmos describe stacks`) to view fully resolved configuration after all imports, inheritance, and overrides. Each alias preserves the original command's flags and output formats:
 
 ```bash
 # View all stacks
@@ -322,6 +364,55 @@ Use `atmos describe component` for a single component:
 atmos describe component vpc -s plat-ue2-prod
 ```
 
+## Stack Lifecycle Commands
+
+Stack commands create manifests and plan, test, deploy, or destroy components. Use `--dry-run` first to preview selection, commands, and hooks.
+
+**Safety rule for agents:** always run `atmos stack destroy ... --dry-run` first and show the user the plan. Never run `stack destroy` without `--dry-run`, and never add `--auto-approve`, unless the user has explicitly confirmed that exact destroy in this conversation.
+
+```bash
+# Create a manifest from a scaffold (never overwrites an existing file).
+atmos stack create --file=stacks/deploy/dev.yaml --name=dev --import=catalog/defaults --component=terraform:network --dry-run
+
+# Plan changes and run tests for selected components.
+atmos stack plan --stack=dev --component=network,app
+atmos stack test --stack=dev --component=network
+
+# Deploy or destroy components across component types in dependency order.
+atmos stack deploy --all --stack=dev --dry-run
+atmos stack deploy --affected --base=origin/main --include-dependencies=2
+atmos stack destroy --all --stack=dev --dry-run
+# Only after the user explicitly confirms the destroy:
+atmos stack destroy --all --stack=dev --max-concurrency=2 --auto-approve
+```
+
+Rules for `stack deploy` and `stack destroy`:
+
+- Select a stack with `--stack`; without `--stack`, `--all`, or `--affected`, interactive terminals prompt for a stack with an enabled, unlocked component supporting the operation. Use `--all` to select across stacks or `--affected` for changed components. Narrow selection with repeatable or comma-separated `--component=name` values; bare `--component` opens a multiselect. Component names match across types. Positional component arguments are rejected. `--tags` matches any tag and `--labels` matches all pairs; dependency expansion ignores these filters.
+- Comparison flags (`--base`, `--ref`, `--sha`, `--repo-path`, `--ssh-key`, `--ssh-key-password`, `--clone-target-ref`) require `--affected`.
+- A `--stack` that names no existing stack is an error.
+- `--include-dependencies` and `--include-dependents` expand without a limit when bare; use the `=N` form to limit depth.
+- Supported kinds: Terraform, Helmfile (deploy runs `helmfile apply`, which needs the helm-diff plugin), Helm, Kubernetes, AWS CloudFormation, and custom kinds whose custom commands define `deploy`/`destroy` with `component.type`. `--affected` does not select custom kinds yet. Packer and kinds without a handler are excluded with a notice.
+- Locked components (`metadata.locked`) are excluded. A selected component whose required dependency has no handler fails before execution. Cycles are reported as readable paths.
+- `destroy` runs in reverse dependency order and fails before execution when a component outside the selection still requires a destroyed one. Add `--include-dependents` or widen `--stack`. Consumers of kinds without a `destroy` operation (such as Packer) do not block; they are reported in a notice.
+- `--auto-approve` passes each handler's approval arguments. Terraform and CloudFormation destroy prompt otherwise; Helm, Kubernetes, and Helmfile deletes do not. Concurrent destroys that would prompt are rejected unless `--auto-approve` is set.
+- `--log-order=grouped` applies when `--max-concurrency` is above 1.
+- Only `ATMOS_STACK`, `ATMOS_IDENTITY`, `ATMOS_DRY_RUN`, `ATMOS_SKIP_HOOKS`, `ATMOS_TAGS`, `ATMOS_LABELS`, and `ATMOS_CI`/`CI` apply; variables such as `ATMOS_TERRAFORM_*_ALL` do not change selection.
+- Undefined named identities or component authentication defaults stop execution before any child starts (dry runs and disabled auth bypass this check).
+- Output is one success, failure, or skipped line per component, including the reason for skips, and a tally such as `3 succeeded, 0 failed, 0 skipped, 1 excluded`.
+
+Rules for `stack create`:
+
+- Choose `--file` for a single manifest or `--target` for a directory layout; they are mutually exclusive and resolve from the project base path. Directory targets must be within the stack base path. Interactive terminals prompt for a missing destination and required scaffold answers, including during dry runs; `--defaults` or `--interactive=false` suppress prompts. `--import` and `--component=kind:name` are repeatable; `--set key=value` supplies scaffold answers; `--ref` applies only to Git template sources.
+- The template must consume `--name`, `--import`, and `--component` (`stack_name`, `stack_imports`, `stack_components`) or creation fails.
+- Before any hook or write, Atmos processes the existing manifests with every generated file. It fails on an unresolvable stack name (pass `--name` or set the variables `stacks.name_template` uses), a missing import, a duplicate stack name, or an invalid generated file.
+- Existing files are never overwritten; edit with `atmos stack config set` or delete the file first.
+- `--dry-run` prints each file as `# <path>` followed by its content, separated by `---`, and lists scaffold hooks. Scaffold hooks receive `ATMOS_HOOK_STATUS`, `ATMOS_HOOK_EXIT_CODE`, and `ATMOS_HOOK_ERROR`.
+
+The `stack plan` command maps Terraform, Helm, Kubernetes, and CloudFormation to their native `plan` commands, and Helmfile to `diff`. The `stack test` command maps Terraform to `test`. Custom kinds can register these operations; unsupported kinds are excluded. Planning does not deploy prerequisites.
+
+Component hooks fire as usual during `stack plan`, `stack test`, `stack deploy`, and `stack destroy`; for example, Helmfile deploy fires `before.helmfile.apply` and `after.helmfile.apply`.
+
 ## YAML Functions
 
 Atmos provides YAML functions for dynamic value resolution at runtime:
@@ -332,6 +423,10 @@ Atmos provides YAML functions for dynamic value resolution at runtime:
 - `!env <VAR_NAME>` -- Read environment variables with optional defaults.
 - `!exec <command>` -- Execute shell commands and use output.
 - `!include <path>` -- Load content from external files.
+- `!secret <name>` -- Resolve declared secrets.
+- `!append` and `!unset` -- Control inherited list/key merge behavior.
+
+For the full current function inventory, load `atmos-yaml-functions`.
 
 ## Common Patterns and Best Practices
 
@@ -340,8 +435,10 @@ Atmos provides YAML functions for dynamic value resolution at runtime:
 3. **Keep inheritance shallow**: Limit to 2-3 levels of `metadata.inherits` to maintain readability.
 4. **Use `_defaults.yaml` at every level**: Define shared vars, env, and settings at the appropriate organizational level.
 5. **Exclude non-deployable files**: Configure `excluded_paths` to prevent catalog, mixin, and defaults files from being treated as top-level stacks.
-6. **Prefer `name_template` over `name_pattern`**: The Go template approach is more flexible and is the recommended method.
+6. **Use `name` or `name_template` for stack naming**: If legacy `name_pattern` is present, migrate it.
 7. **Use `atmos describe stacks` liberally**: Always verify the resolved configuration before applying changes.
+8. **Treat remote imports as config only**: use component `source:` or `atmos vendor pull` when imported
+    config references component code that is not already local.
 
 ## References
 

@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +11,8 @@ import (
 )
 
 func TestProcessUnsetTag(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		input    map[string]any
@@ -137,7 +140,8 @@ func TestProcessUnsetTag(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := processNodes(atmosConfig, tt.input, "", []string{}, nil)
+			t.Parallel()
+			result, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(tt.input), "", []string{}, nil)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
@@ -145,6 +149,8 @@ func TestProcessUnsetTag(t *testing.T) {
 }
 
 func TestProcessUnsetWithSkip(t *testing.T) {
+	t.Parallel()
+
 	atmosConfig := &schema.AtmosConfiguration{}
 
 	input := map[string]any{
@@ -166,7 +172,59 @@ func TestProcessUnsetWithSkip(t *testing.T) {
 	assert.Equal(t, expected, result)
 }
 
+// TestProcessNodesPreservesEmptyLists guards against a regression where the slice-rebuilding
+// branch of processNodes returned a nil slice for empty lists. A nil slice round-trips through
+// YAML as `[]` (so `atmos describe` looks fine) but marshals to JSON `null` in generated
+// `*.terraform.tfvars.json`, which breaks consumers such as Terraform's `concat()` that reject
+// null where a list is expected. Empty lists must remain empty (non-nil) slices.
+func TestProcessNodesPreservesEmptyLists(t *testing.T) {
+	t.Parallel()
+
+	atmosConfig := &schema.AtmosConfiguration{}
+
+	input := map[string]any{
+		"empty_list": []any{},
+		"nested": map[string]any{
+			"inner_empty": []any{},
+		},
+		"non_empty": []any{"a"},
+		// A list whose only items are removed by !unset must also stay an empty (non-nil) list.
+		"unset_to_empty": []any{"!unset"},
+	}
+
+	result, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(input), "", []string{}, nil)
+	assert.NoError(t, err)
+
+	emptyList, ok := result["empty_list"].([]any)
+	assert.True(t, ok, "empty_list should remain a []any")
+	assert.NotNil(t, emptyList, "empty_list must not become nil")
+	assert.Len(t, emptyList, 0)
+
+	nested, ok := result["nested"].(map[string]any)
+	assert.True(t, ok)
+	innerEmpty, ok := nested["inner_empty"].([]any)
+	assert.True(t, ok, "nested.inner_empty should remain a []any")
+	assert.NotNil(t, innerEmpty, "nested.inner_empty must not become nil")
+	assert.Len(t, innerEmpty, 0)
+
+	unsetToEmpty, ok := result["unset_to_empty"].([]any)
+	assert.True(t, ok, "unset_to_empty should remain a []any")
+	assert.NotNil(t, unsetToEmpty, "a list emptied by !unset must not become nil")
+	assert.Len(t, unsetToEmpty, 0)
+
+	// Confirm the user-facing symptom directly: empty lists serialize to `[]`, not `null`.
+	j, err := json.Marshal(result)
+	assert.NoError(t, err)
+	assert.JSONEq(
+		t,
+		`{"empty_list":[],"nested":{"inner_empty":[]},"non_empty":["a"],"unset_to_empty":[]}`,
+		string(j),
+	)
+}
+
 func TestUnsetMarker(t *testing.T) {
+	t.Parallel()
+
 	// Test the UnsetMarker type.
 	marker := UnsetMarker{IsUnset: true}
 	assert.True(t, marker.IsUnset)
@@ -176,6 +234,8 @@ func TestUnsetMarker(t *testing.T) {
 }
 
 func TestProcessCustomTagsWithUnset(t *testing.T) {
+	t.Parallel()
+
 	atmosConfig := &schema.AtmosConfiguration{}
 
 	// Test that processCustomTags returns UnsetMarker for !unset tag.
@@ -193,6 +253,8 @@ func TestProcessCustomTagsWithUnset(t *testing.T) {
 }
 
 func TestProcessCustomYamlTagsWithUnset(t *testing.T) {
+	t.Parallel()
+
 	atmosConfig := &schema.AtmosConfiguration{}
 
 	input := schema.AtmosSectionMapType{
@@ -215,12 +277,14 @@ func TestProcessCustomYamlTagsWithUnset(t *testing.T) {
 		},
 	}
 
-	result, err := ProcessCustomYamlTags(atmosConfig, input, "", []string{}, nil)
+	result, err := ProcessCustomYamlTags(atmosConfig, explicitYAMLFunctionsForTest(input), "", []string{}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, expected, result)
 }
 
 func TestUnsetInheritanceScenario(t *testing.T) {
+	t.Parallel()
+
 	atmosConfig := &schema.AtmosConfiguration{}
 
 	// Simulate a parent configuration.
@@ -242,11 +306,11 @@ func TestUnsetInheritanceScenario(t *testing.T) {
 	}
 
 	// Process parent (no unset tags).
-	processedParent, err := processNodes(atmosConfig, parent, "", []string{}, nil)
+	processedParent, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(parent), "", []string{}, nil)
 	assert.NoError(t, err)
 
 	// Process child (with unset tag).
-	processedChild, err := processNodes(atmosConfig, child, "", []string{}, nil)
+	processedChild, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(child), "", []string{}, nil)
 	assert.NoError(t, err)
 
 	// Verify the unset tag removed the key from child.
@@ -264,6 +328,8 @@ func TestUnsetInheritanceScenario(t *testing.T) {
 }
 
 func TestUnsetWithComplexArray(t *testing.T) {
+	t.Parallel()
+
 	atmosConfig := &schema.AtmosConfiguration{}
 
 	input := map[string]any{
@@ -284,12 +350,14 @@ func TestUnsetWithComplexArray(t *testing.T) {
 		},
 	}
 
-	result, err := processNodes(atmosConfig, input, "", []string{}, nil)
+	result, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(input), "", []string{}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, expected, result)
 }
 
 func TestUnsetEmptyString(t *testing.T) {
+	t.Parallel()
+
 	atmosConfig := &schema.AtmosConfiguration{}
 
 	// Test that empty string with !unset still works.
@@ -304,7 +372,7 @@ func TestUnsetEmptyString(t *testing.T) {
 		"key3": "value3",
 	}
 
-	result, err := processNodes(atmosConfig, input, "", []string{}, nil)
+	result, err := processNodes(atmosConfig, explicitYAMLFunctionsForTest(input), "", []string{}, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, expected, result)
 }

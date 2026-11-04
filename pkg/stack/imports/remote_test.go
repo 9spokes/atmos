@@ -1,6 +1,7 @@
 package imports
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -38,6 +39,29 @@ func newTestRemoteImporter(t *testing.T, atmosConfig *schema.AtmosConfiguration)
 	require.NoError(t, err)
 
 	return importer
+}
+
+// useTestGlobalImporter swaps the package-global remote importer for one backed by an
+// isolated temp cache dir, and resets the singleton (Once, importer, and error) to its
+// zero state on cleanup — it does not restore any prior importer, so stacked use is not
+// safe. It must prime globalImporterOnce (not just assign globalImporter): getGlobalImporter()
+// calls globalImporterOnce.Do, so a freshly-reset Once would otherwise run and overwrite the
+// injection with a real-cache importer that writes to the shared user cache dir — which flakes
+// on CI runners (notably Windows: "The system cannot find the path specified").
+func useTestGlobalImporter(t *testing.T, atmosConfig *schema.AtmosConfiguration) {
+	t.Helper()
+	importer := newTestRemoteImporter(t, atmosConfig)
+
+	globalImporterOnce = sync.Once{}
+	globalImporterErr = nil
+	// Consume the Once now so the lazy getGlobalImporter() keeps our injected importer.
+	globalImporterOnce.Do(func() { globalImporter = importer })
+
+	t.Cleanup(func() {
+		globalImporterOnce = sync.Once{}
+		globalImporter = nil
+		globalImporterErr = nil
+	})
 }
 
 func initGitRepo(t *testing.T, files map[string]string) string {
@@ -242,7 +266,7 @@ func TestRemoteImporter_Resolve_GitNoSubdirDownloadsAsFile(t *testing.T) {
 }
 
 // TestRemoteImporter_Resolve_GitSubdir_NoRef_DefaultsToBranch regression-tests a ref-less git-subdir
-// import. Because resolveGitSubdir pre-creates the temp dir, the go-getter git getter takes the
+// import. Because resolveSourceSubdir pre-creates the temp dir, the go-getter git getter takes the
 // "update" path; without a ref, update previously ran `git checkout ""` and failed with
 // "empty string is not a valid pathspec". The fix defaults an empty ref to the remote's default
 // branch, the same as clone(). This was masked for private repos by an earlier auth failure (the
@@ -528,14 +552,7 @@ func TestRemoteImporter_ResolveRemoteImport_GlobalImporter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	globalImporterOnce = sync.Once{}
-	globalImporter = newTestRemoteImporter(t, &schema.AtmosConfiguration{})
-	globalImporterErr = nil
-	t.Cleanup(func() {
-		globalImporterOnce = sync.Once{}
-		globalImporter = nil
-		globalImporterErr = nil
-	})
+	useTestGlobalImporter(t, &schema.AtmosConfiguration{})
 
 	uri := server.URL + "/config.yaml"
 	matches, err := ResolveRemoteImport(&schema.AtmosConfiguration{}, uri)
@@ -556,14 +573,7 @@ func TestRemoteImporter_DownloadRemoteImport_GlobalImporter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	globalImporterOnce = sync.Once{}
-	globalImporter = newTestRemoteImporter(t, &schema.AtmosConfiguration{})
-	globalImporterErr = nil
-	t.Cleanup(func() {
-		globalImporterOnce = sync.Once{}
-		globalImporter = nil
-		globalImporterErr = nil
-	})
+	useTestGlobalImporter(t, &schema.AtmosConfiguration{})
 
 	path, err := DownloadRemoteImport(&schema.AtmosConfiguration{}, server.URL+"/config.yaml")
 	require.NoError(t, err)
@@ -636,12 +646,11 @@ func TestProcessImportPath_Remote(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Reset the global importer for this test.
-	globalImporterOnce = sync.Once{}
-	globalImporter = nil
-	globalImporterErr = nil
-
 	atmosConfig := &schema.AtmosConfiguration{}
+	// Isolate the global importer's cache to a temp dir so the remote download does not
+	// write to (and flake on) the shared real user cache dir.
+	useTestGlobalImporter(t, atmosConfig)
+
 	basePath := filepath.Join(string(os.PathSeparator), "stacks")
 
 	// Process a remote import path.
@@ -694,12 +703,11 @@ func TestResolveImportPaths_MixedPaths(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Reset the global importer for this test.
-	globalImporterOnce = sync.Once{}
-	globalImporter = nil
-	globalImporterErr = nil
-
 	atmosConfig := &schema.AtmosConfiguration{}
+	// Isolate the global importer's cache to a temp dir so the remote download does not
+	// write to (and flake on) the shared real user cache dir.
+	useTestGlobalImporter(t, atmosConfig)
+
 	basePath := filepath.Join(string(os.PathSeparator), "stacks")
 
 	importPaths := []string{
@@ -830,12 +838,11 @@ func TestResolveImportPaths_ErrorPropagation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Reset the global importer for this test.
-	globalImporterOnce = sync.Once{}
-	globalImporter = nil
-	globalImporterErr = nil
-
 	atmosConfig := &schema.AtmosConfiguration{}
+	// Isolate the global importer's cache to a temp dir so the remote download does not
+	// write to (and flake on) the shared real user cache dir.
+	useTestGlobalImporter(t, atmosConfig)
+
 	basePath := filepath.Join(string(os.PathSeparator), "stacks")
 
 	importPaths := []string{
@@ -975,6 +982,97 @@ func TestCleanRemoteSubdir(t *testing.T) {
 			assert.Equal(t, tt.expected, got)
 		})
 	}
+}
+
+// TestRemoteImporter_Download_HonorsConfigTTL verifies that Download -- the plain-URL /
+// no-subdirectory cache path, distinct from the git-subdir path Resolve/resolveSourceSubdir
+// use -- now also honors atmosConfig.Imports.TTL, instead of caching forever unconditionally.
+// Each importer has its own session, simulating separate atmos invocations against the
+// same on-disk cache dir.
+func TestRemoteImporter_Download_HonorsConfigTTL(t *testing.T) {
+	var requestCount atomic.Int32
+	content := "vars:\n  from_http: true\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "text/yaml")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(content))
+	}))
+	defer server.Close()
+	uri := server.URL + "/config.yaml"
+
+	baseDir := t.TempDir()
+	newImporter := func(t *testing.T, ttl string) *RemoteImporter {
+		t.Helper()
+		testCache, err := cache.NewFileCache("test", cache.WithBaseDir(baseDir))
+		require.NoError(t, err)
+		importer, err := NewRemoteImporter(&schema.AtmosConfiguration{Imports: schema.ImportsSettings{TTL: ttl}}, WithCache(testCache))
+		require.NoError(t, err)
+		return importer
+	}
+
+	// Run 1: cold cache, ttl configured -> fetch. (The real downloader may issue more
+	// than one HTTP request per logical fetch, e.g. a HEAD check; assert on the delta
+	// changing, not an exact request count, to stay robust to that detail.)
+	_, err := newImporter(t, "1h").Download(uri)
+	require.NoError(t, err)
+	afterCold := requestCount.Load()
+	assert.Positive(t, afterCold, "cold cache must fetch")
+
+	// Run 2: warm cache, fresh ttl -> Download reuses, no new request.
+	_, err = newImporter(t, "1h").Download(uri)
+	require.NoError(t, err)
+	assert.Equal(t, afterCold, requestCount.Load(), "Download should honor atmosConfig.Imports.TTL and reuse the fresh download")
+
+	// Run 3: backdate the freshness metadata past the ttl -> Download refreshes.
+	metaBytes, exists, err := newImporter(t, "1h").cache.Get(downloadMetaCacheKey(uri))
+	require.NoError(t, err)
+	require.True(t, exists)
+	var meta sourceMetadata
+	require.NoError(t, json.Unmarshal(metaBytes, &meta))
+	meta.UpdatedAt = time.Now().Add(-2 * time.Hour)
+	backdated, err := json.Marshal(meta)
+	require.NoError(t, err)
+	testCache, err := cache.NewFileCache("test", cache.WithBaseDir(baseDir))
+	require.NoError(t, err)
+	require.NoError(t, testCache.Set(downloadMetaCacheKey(uri), backdated))
+
+	_, err = newImporter(t, "1h").Download(uri)
+	require.NoError(t, err)
+	afterExpired := requestCount.Load()
+	assert.Greater(t, afterExpired, afterCold, "expired download should be refreshed")
+
+	// Run 4: ttl unset (default) -> preserves historical unconditional/permanent caching,
+	// reusing the still-cached content from run 3 with no new request.
+	_, err = newImporter(t, "").Download(uri)
+	require.NoError(t, err)
+	assert.Equal(t, afterExpired, requestCount.Load(), "unset Imports.TTL must preserve the existing cache-forever behavior")
+}
+
+// TestRemoteImporter_downloadCacheFresh_EmptyTTL verifies downloadCacheFresh's own defensive
+// guard: called with an empty ttl it must report "not fresh" even when fresh metadata exists,
+// so a caller can never accidentally treat an unset ttl as "cached forever" through this path.
+func TestRemoteImporter_downloadCacheFresh_EmptyTTL(t *testing.T) {
+	importer := newTestRemoteImporter(t, &schema.AtmosConfiguration{})
+	uri := "https://example.com/config.yaml"
+
+	data, err := json.Marshal(sourceMetadata{SourceURI: uri, UpdatedAt: time.Now()})
+	require.NoError(t, err)
+	require.NoError(t, importer.cache.Set(downloadMetaCacheKey(uri), data))
+
+	assert.False(t, importer.downloadCacheFresh(uri, ""), "an empty ttl must never be treated as fresh, regardless of stored metadata")
+}
+
+// TestRemoteImporter_downloadCacheFresh_CorruptMetadata verifies that malformed freshness
+// metadata (e.g. from a version skew or partial write) is treated as "not fresh" rather than
+// causing Download to error out -- the same fail-safe/refetch behavior a missing entry gets.
+func TestRemoteImporter_downloadCacheFresh_CorruptMetadata(t *testing.T) {
+	importer := newTestRemoteImporter(t, &schema.AtmosConfiguration{})
+	uri := "https://example.com/config.yaml"
+
+	require.NoError(t, importer.cache.Set(downloadMetaCacheKey(uri), []byte("not valid json")))
+
+	assert.False(t, importer.downloadCacheFresh(uri, "1h"), "corrupt metadata must be treated as not-fresh, not cause a crash or false positive")
 }
 
 func relativeSlashPath(t *testing.T, root, path string) string {

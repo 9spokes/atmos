@@ -7,6 +7,7 @@ import (
 
 	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/ansi"
+	ci "github.com/cloudposse/atmos/pkg/ci"
 	"github.com/cloudposse/atmos/pkg/ci/internal/plugin"
 	log "github.com/cloudposse/atmos/pkg/logger"
 	"github.com/cloudposse/atmos/pkg/perf"
@@ -14,19 +15,17 @@ import (
 )
 
 const (
-	aggregateComponentName               = "aggregate"
-	aggregateCommandApply                = "apply"
-	aggregateCommandDestroy              = "destroy"
-	aggregateCommandPlan                 = "plan"
-	aggregateMarkdownMaxBytes            = 960 * 1024
-	aggregateMarkdownNoticeReserveBytes  = 512
-	aggregateStackAll                    = "all"
-	aggregateDetailOutputMaxBytes        = 12 * 1024
-	aggregateDetailLineBacktrackMaxBytes = 4 * 1024
-	aggregateStatusChanged               = "changed"
-	aggregateStatusFailed                = "failed"
-	aggregateStatusNoChanges             = "no changes"
-	aggregateStatusSkipped               = "skipped"
+	aggregateComponentName              = "aggregate"
+	aggregateCommandApply               = "apply"
+	aggregateCommandDestroy             = "destroy"
+	aggregateCommandPlan                = "plan"
+	aggregateMarkdownMaxBytes           = 960 * 1024
+	aggregateMarkdownNoticeReserveBytes = 512
+	aggregateStackAll                   = "all"
+	aggregateStatusChanged              = "changed"
+	aggregateStatusFailed               = "failed"
+	aggregateStatusNoChanges            = "no changes"
+	aggregateStatusSkipped              = "skipped"
 )
 
 // terraformPlanAggregate is the complete rendered model for one graph-backed Terraform run.
@@ -83,7 +82,7 @@ func (p *Plugin) onAfterTerraformAggregate(ctx *plugin.HookContext) error {
 	command := aggregateCommand(ctx, resultSet)
 	resultSet.Command = command
 	ctx.Command = command
-	aggregate := p.buildPlanAggregate(resultSet)
+	aggregate := p.buildPlanAggregate(ctx, resultSet)
 
 	if err := p.writeAggregateArtifacts(ctx, &aggregate); err != nil {
 		return err
@@ -92,15 +91,54 @@ func (p *Plugin) onAfterTerraformAggregate(ctx *plugin.HookContext) error {
 	return nil
 }
 
+// onBeforeTerraformAggregate handles before.terraform.{plan,apply,destroy}.aggregate
+// for graph-backed multi-component runs. It creates one real pending
+// check-run per resolved component before the scheduler starts — the
+// before-side counterpart to onAfterTerraformAggregate's per-component
+// fan-out, so bulk runs get the same "pending" signal a single-component run
+// already gets instead of one status with no known component.
+func (p *Plugin) onBeforeTerraformAggregate(ctx *plugin.HookContext) error {
+	defer perf.Track(ctx.Config, "terraform.Plugin.onBeforeTerraformAggregate")()
+
+	if !ci.ChecksEnabled(ctx.Config) {
+		return nil
+	}
+
+	pending, ok := normalizeTerraformPlanPending(ctx.Aggregate)
+	if !ok || len(pending.Nodes) == 0 {
+		log.Debug("Skipping before-aggregate Terraform CI hook: no resolved components")
+		return nil
+	}
+
+	ctx.Command = normalizeAggregateCommand(pending.Command)
+	p.createAggregateCheckRuns(ctx, pending.Nodes)
+	return nil
+}
+
+// normalizeTerraformPlanPending extracts a Terraform pending-node set from hook payload data.
+func normalizeTerraformPlanPending(value any) (schema.TerraformPlanCIPendingSet, bool) {
+	switch v := value.(type) {
+	case schema.TerraformPlanCIPendingSet:
+		return v, true
+	case *schema.TerraformPlanCIPendingSet:
+		if v == nil {
+			return schema.TerraformPlanCIPendingSet{}, false
+		}
+		return *v, true
+	default:
+		return schema.TerraformPlanCIPendingSet{}, false
+	}
+}
+
 // writeAggregateArtifacts serializes all CI provider side effects for an aggregate run.
 func (p *Plugin) writeAggregateArtifacts(ctx *plugin.HookContext, aggregate *terraformPlanAggregate) error {
-	if isSummaryEnabled(ctx.Config) {
+	if ci.SummaryEnabled(ctx.Config) {
 		if err := p.writeAggregateSummary(ctx, aggregate.Markdown); err != nil {
 			log.Warn("CI aggregate summary failed", "error", err)
 		}
 	}
 
-	if isOutputEnabled(ctx.Config) {
+	if ci.OutputEnabled(ctx.Config) {
 		if err := p.writeAggregateOutputs(ctx, aggregate); err != nil {
 			log.Warn("CI aggregate output failed", "error", err)
 		}
@@ -110,11 +148,11 @@ func (p *Plugin) writeAggregateArtifacts(ctx *plugin.HookContext, aggregate *ter
 		return err
 	}
 
-	if isCheckEnabled(ctx.Config) {
+	if ci.ChecksEnabled(ctx.Config) {
 		p.updateAggregateCheckRuns(ctx, aggregate)
 	}
 
-	if isCommentsEnabled(ctx.Config) {
+	if ci.CommentsEnabled(ctx.Config) {
 		if err := p.postAggregateComment(ctx, aggregate.Markdown); err != nil {
 			logCommentError("CI aggregate PR comment skipped", err)
 		}
@@ -169,7 +207,7 @@ func normalizeTerraformPlanAggregate(value any) (schema.TerraformPlanCIResultSet
 }
 
 // buildPlanAggregate sorts scheduler results and calculates aggregate totals.
-func (p *Plugin) buildPlanAggregate(resultSet schema.TerraformPlanCIResultSet) terraformPlanAggregate {
+func (p *Plugin) buildPlanAggregate(ctx *plugin.HookContext, resultSet schema.TerraformPlanCIResultSet) terraformPlanAggregate {
 	command := normalizeAggregateCommand(resultSet.Command)
 	results := append([]schema.TerraformPlanCIResult(nil), resultSet.Results...)
 	sort.SliceStable(results, func(i, j int) bool {
@@ -196,7 +234,7 @@ func (p *Plugin) buildPlanAggregate(resultSet schema.TerraformPlanCIResultSet) t
 
 	aggregate.ExitCode = aggregateExitCode(command, &aggregate.Counts)
 	aggregate.Summary = aggregateSummaryText(&aggregate.Counts)
-	aggregate.Markdown = renderAggregatePlanMarkdown(&aggregate)
+	aggregate.Markdown = p.renderAggregatePlanMarkdown(ctx, &aggregate)
 	return aggregate
 }
 

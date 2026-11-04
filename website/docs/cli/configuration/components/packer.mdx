@@ -6,12 +6,14 @@ sidebar_class_name: command
 id: packer
 description: Configure Packer component behavior in atmos.yaml.
 ---
-import File from '@site/src/components/File'
-import Intro from '@site/src/components/Intro'
-import DocCardList from '@theme/DocCardList'
+
+import File from "@site/src/components/File";
+import Intro from "@site/src/components/Intro";
+import DocCardList from "@theme/DocCardList";
 
 <Intro>
-Configure how Atmos executes Packer commands for building machine images, including AMIs, VM images, and container images.
+  Configure how Atmos executes Packer commands for building machine images,
+  including AMIs, VM images, and container images.
 </Intro>
 
 ## Configuration
@@ -25,6 +27,7 @@ components:
 
     # Base path to Packer components
     base_path: components/packer
+
 ```
 </File>
 
@@ -34,6 +37,8 @@ components:
   <dt>`command`</dt>
   <dd>
     Specifies the executable to run for Packer commands. Defaults to `packer`.
+
+    For one invocation, use `--command /path/to/executable` (or `--packer-command`). The flag overrides both this default and the stack component's `command`.
 
     Examples:
     - `packer` - Use Packer from PATH
@@ -54,14 +59,16 @@ components:
 Packer components follow the same directory structure as other component types:
 
 ```
+
 components/
 └── packer/
-    ├── ami-builder/
-    │   ├── main.pkr.hcl
-    │   └── variables.pkr.hcl
-    └── docker-image/
-        ├── main.pkr.hcl
-        └── variables.pkr.hcl
+├── ami-builder/
+│ ├── main.pkr.hcl
+│ └── variables.pkr.hcl
+└── docker-image/
+├── main.pkr.hcl
+└── variables.pkr.hcl
+
 ```
 
 ## Example Configuration
@@ -73,6 +80,7 @@ components:
     command: packer
     base_path: components/packer
 ```
+
 </File>
 
 With this configuration, you can run Packer commands through Atmos:
@@ -87,13 +95,40 @@ atmos packer validate docker-image -s dev
 
 ## Related Commands
 
-<DocCardList items={[
-  {type: 'link', href: '/cli/commands/packer/usage', label: 'atmos packer', description: 'Execute Packer commands'},
-  {type: 'link', href: '/cli/commands/packer/build', label: 'atmos packer build', description: 'Build machine images'},
-  {type: 'link', href: '/cli/commands/packer/validate', label: 'atmos packer validate', description: 'Validate Packer templates'},
-  {type: 'link', href: '/cli/commands/packer/init', label: 'atmos packer init', description: 'Initialize Packer plugins'},
-  {type: 'link', href: '/cli/commands/packer/inspect', label: 'atmos packer inspect', description: 'Inspect Packer templates'},
-]} />
+<DocCardList
+  items={[
+    {
+      type: "link",
+      href: "/cli/commands/packer/usage",
+      label: "atmos packer",
+      description: "Execute Packer commands",
+    },
+    {
+      type: "link",
+      href: "/cli/commands/packer/build",
+      label: "atmos packer build",
+      description: "Build machine images",
+    },
+    {
+      type: "link",
+      href: "/cli/commands/packer/validate",
+      label: "atmos packer validate",
+      description: "Validate Packer templates",
+    },
+    {
+      type: "link",
+      href: "/cli/commands/packer/init",
+      label: "atmos packer init",
+      description: "Initialize Packer plugins",
+    },
+    {
+      type: "link",
+      href: "/cli/commands/packer/inspect",
+      label: "atmos packer inspect",
+      description: "Inspect Packer templates",
+    },
+  ]}
+/>
 
 ## Related
 

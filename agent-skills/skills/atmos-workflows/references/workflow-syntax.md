@@ -104,13 +104,12 @@ dependencies:
 steps:
   - command: string              # Required: Command to execute
     name: string                 # Optional: Step identifier
-    type: atmos | shell          # Optional: Step type (default: atmos)
+    type: atmos | shell | ...    # Optional: Step type (default: atmos)
     stack: string                # Optional: Stack override for this step
     identity: string             # Optional: Authentication identity for this step
     working_directory: string    # Optional: Working directory override
     retry:                       # Optional: Retry configuration
       max_attempts: integer
-      delay: duration
       backoff_strategy: string
       initial_delay: duration
       random_jitter: float
@@ -138,10 +137,10 @@ For **shell** type: Any shell command or script. Supports YAML multiline strings
 
 ```yaml
 steps:
-  - command: echo "Hello"
-    type: shell
+  - type: toast
+    level: info
+    content: Starting checks
   - command: |
-      echo "Multi-line script"
       aws sts get-caller-identity
       if [ $? -eq 0 ]; then
         echo "Auth OK"
@@ -152,6 +151,11 @@ steps:
       joins to single line"
     type: shell
 ```
+
+Use shell for external CLIs, short glue commands, terminal-native tools, or repo scripts. If the
+script mostly prints status, formats output, loops over stacks/components, waits, starts background
+services, or writes CI metadata, prefer native step types such as `toast`, `table`, `format`,
+`parallel`, `matrix`, `wait`, `container`, or `emulator`.
 
 ### name
 
@@ -171,20 +175,25 @@ steps:
 
 ### type
 
-Step type. Two values are supported:
+Step type. Atmos supports native command, orchestration, interactive, UI, and output step types:
 
 | Type | Description | Implicit |
 |------|-------------|----------|
 | `atmos` | Atmos CLI command (atmos prefix auto-prepended) | Yes (default) |
 | `shell` | Shell command or script | Must be explicit |
+| `exec` | Replace Atmos with a terminal-native process | No |
+| `container`, `emulator`, `http` | Native container, emulator, or HTTP operations | No |
+| `parallel`, `matrix`, `wait`, `wait-all`, `cancel` | Native orchestration | No |
+| `toast`, `markdown`, `table`, `pager`, `format`, `log`, `spin` | UI and output rendering | No |
 
 ```yaml
 steps:
   - command: terraform plan vpc              # type: atmos (implicit)
   - command: terraform apply vpc             # type: atmos (implicit)
     type: atmos                              # Explicit (optional)
-  - command: echo "Hello"
-    type: shell                              # Required for shell commands
+  - type: toast
+    level: success
+    content: Done
 ```
 
 ### stack
@@ -230,17 +239,16 @@ steps:
 
 ### retry
 
-Retry configuration for the step. Retries the command on failure.
+Retry configuration for the step. Retries the command on failure. An omitted or empty (`retry: {}`) policy runs once. Set `max_attempts` or `max_elapsed_time` to bound retries.
 
 ```yaml
 retry:
-  max_attempts: 3                    # Max attempts (default: 1, meaning no retry)
-  delay: 5s                          # Delay between retries (default: 5s)
+  max_attempts: 3                    # Max attempts (omit for unlimited in a nonempty policy)
   backoff_strategy: exponential      # constant | exponential | linear (default: constant)
-  initial_delay: 3s                  # Initial delay for backoff strategies (default: 5s)
+  initial_delay: 3s                  # Initial delay for backoff strategies (omit for no delay)
   random_jitter: 0.0                 # Random jitter added to delay (default: 0.0)
   multiplier: 2                      # Multiplier for exponential strategy (default: 2)
-  max_elapsed_time: 4m               # Total timeout for all retries (default: 30m)
+  max_elapsed_time: 4m               # Total timeout for all retries (omit for no time limit)
 ```
 
 **Backoff strategies**:
@@ -271,6 +279,8 @@ atmos workflow [workflow_name] [flags]
 |------|-------|-------------|
 | `--file` | `-f` | Workflow file (relative to `workflows.base_path`) |
 | `--stack` | `-s` | Override stack for all Atmos-type steps |
+| `--tags` | | Component tag selector forwarded to all Atmos-type steps (matches any provided tag) |
+| `--labels` | | Component label selector forwarded to all Atmos-type steps (matches all provided key-value pairs) |
 | `--from-step` | | Start execution from the named step |
 | `--dry-run` | | Preview steps without executing |
 | `--identity` | | Default identity for steps without explicit identity |
@@ -325,7 +335,7 @@ workflows:
         retry:
           max_attempts: 2
           backoff_strategy: constant
-          delay: 10s
+          initial_delay: 10s
       - command: |
           echo "VPC deployed, verifying..."
           sleep 5

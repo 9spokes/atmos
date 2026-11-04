@@ -1,0 +1,75 @@
+package hooks
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	"github.com/cloudposse/atmos/cmd/internal"
+	"github.com/cloudposse/atmos/pkg/flags"
+	githooks "github.com/cloudposse/atmos/pkg/git/hooks"
+	"github.com/cloudposse/atmos/pkg/perf"
+)
+
+// flagForce is the flag name for --force on hooks install.
+const flagForce = "force"
+
+// installParser handles flag parsing for `atmos git hooks install`.
+var installParser = flags.NewStandardParser(
+	flags.WithViperPrefix(hooksViperPrefix),
+	flags.WithBoolFlag(flagForce, "f", false, "Overwrite existing hook files"),
+	flags.WithEnvVars(flagForce, "ATMOS_GIT_HOOKS_FORCE"),
+)
+
+// installCmd is the `atmos git hooks install` subcommand.
+var installCmd = &cobra.Command{
+	Use:   "install [hook-name...]",
+	Short: "Install Atmos-managed Git hook shims",
+	Long: `Write shim scripts into .git/hooks for each configured git.hooks entry.
+
+Without hook names, installs all configured hooks.
+With hook names, installs only the named hooks (error if not configured).
+
+Each shim runs the named hook through "atmos git hooks run", preserving Git's arguments.
+It prefers the current worktree's executable build/atmos (or build/atmos.exe).
+Development builds are never pinned into shared hooks: without a local build,
+the shim uses atmos on PATH. System installations retain their absolute path
+as a fallback for GUI clients, then try PATH if that binary is unavailable.
+Re-run install to upgrade an existing Atmos shim.
+
+Each hook is validated before any shim is written: it must set exactly one of
+command or a non-empty steps list, and its steps must be valid. Names that Git
+never invokes produce a warning. Re-running install leaves unchanged shims as is.
+
+Refuses to overwrite an existing hook unless --force is passed, unless the
+existing file already contains the Atmos marker.
+
+--force backs up recognized pre-commit framework hooks before replacing them.
+It replaces the installed launcher; it does not convert .pre-commit-config.yaml.
+
+Refuses installation when core.hooksPath is configured, even with --force, to
+preserve hook directories managed by other tools.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer perf.Track(atmosConfigPtr, "git.hooks.install.RunE")()
+
+		v := viper.GetViper()
+		if err := installParser.BindFlagsToViper(cmd, v); err != nil {
+			return err
+		}
+
+		force := v.GetBool(viperKey(flagForce))
+		return githooks.Install(cmd.Context(), gitConfig(), args, force)
+	},
+}
+
+func init() {
+	installParser.RegisterFlags(installCmd)
+	if err := installParser.BindToViper(viper.GetViper()); err != nil {
+		panic(fmt.Sprintf("git hooks install: BindToViper: %v", err))
+	}
+	internal.RegisterCommandMetadata(
+		installCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/git/hooks/install"),
+	)
+}

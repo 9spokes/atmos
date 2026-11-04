@@ -1,0 +1,20 @@
+commands:
+  - name: casts generate examples demo-env masked-token
+    description: Regenerate the demo-env masked token cast
+    env:
+      PATH: '{{ env "PWD" }}/../../.context/cast-fixtures/demo-env/.cast-bin:{{ env "PWD" }}/../../.context/bin:{{ env "PATH" }}'
+    steps:
+      - type: shell
+        name: setup
+        command: atmos casts setup
+      - type: script
+        name: record
+        source: scripts/casts/masked-token.star
+  - name: casts validate examples demo-env masked-token
+    description: Validate the demo-env masked token cast
+    steps:
+      - type: script
+        name: validate
+        env:
+          CAST_VALIDATE: 'true'
+        source: scripts/casts/masked-token.star

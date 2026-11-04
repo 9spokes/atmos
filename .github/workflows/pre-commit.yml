@@ -4,64 +4,93 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 env:
-  # Ensure pre-commit uses the right Python version
-  PYTHON_VERSION: "3.11"
-  # Skip hooks that are already running in other CI jobs to avoid redundant work
-  # go-build-mod: Already runs in test.yml build job
-  # golangci-lint: Already runs in codeql.yml lint-golangci job
-  # lintroller: Already runs in codeql.yml lint-golangci job (via custom-gcl binary)
-  SKIP: go-build-mod,golangci-lint,lintroller
+  # No `|direct` fallback: under harden-runner's block mode a direct fetch
+  # only fans out to blocked vanity-import hosts and burns minutes; see the
+  # GOPROXY comment in test.yml.
+  GOPROXY: "https://proxy.golang.org"
 
 jobs:
   pre-commit:
     name: Run pre-commit hooks
-    runs-on:
-      - runs-on=${{github.run_id}}
-      - runner=terraform
-      - tag=atmos
-      - extras=s3-cache
-      - private=false
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    # Source-built runners and pinned tools are prepared before any checks.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-          # Fetch full history for proper diff checking
+          # Check the PR head itself. Its merge base with the current parent
+          # excludes newer trunk changes and avoids stale event base SHAs.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Fetch full history for proper diff checking.
           fetch-depth: 0
 
+      - name: Verify bundled allowlist parser
+        run: |
+          npm ci --ignore-scripts --prefix .github/actions/harden-runner
+          npm run build --prefix .github/actions/harden-runner
+          git diff --exit-code -- .github/actions/harden-runner/runtime/yaml.cjs
+
+      - name: Test CI helper scripts
+        run: >-
+          node --test
+          .github/scripts/*.test.mjs
+          .github/actions/harden-runner/runtime/*.test.cjs
+          .github/actions/harden-runner/diagnostics/*.test.cjs
+
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: ./.github/actions/setup-go-cache
         with:
           go-version-file: go.mod
-          cache: true
 
       - name: Install Go tools
+        env:
+          GOBIN: ${{ github.workspace }}/build/check-tools
         run: |
-          # Install gofumpt for pre-commit
-          go install mvdan.cc/gofumpt@latest
+          # Pin check tools consistently with atmos dev setup.
+          # Pin to the gofumpt bundled by golangci-lint v2.5.0 (the gofumpt formatter in
+          # .golangci.yml) so the standalone hook and the linter stay in lockstep. Floating
+          # @latest drifted to v0.10.0, which reformats v0.9.x-clean code and broke unrelated
+          # files that fell into the PR diff range.
+          go install mvdan.cc/gofumpt@v0.9.1
 
           # Install golangci-lint v2
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
 
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+
           # Add Go bin to PATH
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          echo "$GOBIN" >> "$GITHUB_PATH"
 
+      # Pre-download dependencies to prevent go mod tidy from trying to fetch
+      # internal packages. With retry: GOPROXY no longer falls back to direct
+      # fetches (they only hit blocked vanity hosts under harden-runner's block
+      # mode), so transient proxy errors are handled by retrying instead.
       - name: Download Go module dependencies
+        uses: ./.github/actions/go-mod-download-retry
+
+      - name: Build repository check runners
+        env:
+          CGO_ENABLED: "0"
         run: |
-          # Pre-download dependencies to prevent go mod tidy from trying to fetch internal packages
-          go mod download
+          go build -o build/ .
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Test native sandbox and repository checks
+        run: CGO_ENABLED=0 go test ./pkg/git/sandbox ./pkg/script/starlark ./pkg/git/hooks ./cmd/git/hooks
 
-      - name: Run CloudPosse pre-commit action
-        uses: cloudposse/github-action-pre-commit@v4.0.0
-        with:
-          # Run against files changed in the PR only
-          # This prevents formatting/checking unrelated files
-          extra_args: --from-ref ${{ github.event.pull_request.base.sha }} --to-ref HEAD
+      - name: Run Atmos repository checks
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        # Native stack updates can deliver a synchronize event with an old base
+        # SHA after the new parent is published. Fetch the branch and calculate
+        # the review scope from the checked-out head's current merge base.
+        run: |
+          git fetch --no-tags origin "refs/heads/$PR_BASE_REF"
+          pr_merge_base="$(git merge-base HEAD FETCH_HEAD)"
+          ./build/atmos check pr --base-ref "$pr_merge_base" --skip golangci-lint

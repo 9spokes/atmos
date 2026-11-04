@@ -2,11 +2,15 @@ package step
 
 import (
 	"context"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	errUtils "github.com/cloudposse/atmos/errors"
+	cfg "github.com/cloudposse/atmos/pkg/config"
 	"github.com/cloudposse/atmos/pkg/schema"
 )
 
@@ -15,6 +19,8 @@ import (
 // This file tests the helper methods that don't require running actual atmos commands.
 
 func TestAtmosHandler_ResolveStack(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
@@ -74,6 +80,7 @@ func TestAtmosHandler_ResolveStack(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := atmosHandler.resolveStack(tt.step, tt.vars)
 			if tt.expectError {
 				assert.Error(t, err)
@@ -86,6 +93,8 @@ func TestAtmosHandler_ResolveStack(t *testing.T) {
 }
 
 func TestAtmosHandler_ResolveWorkDir(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
@@ -144,6 +153,7 @@ func TestAtmosHandler_ResolveWorkDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := atmosHandler.resolveWorkDir(tt.step, tt.vars)
 			if tt.expectError {
 				assert.Error(t, err)
@@ -156,6 +166,8 @@ func TestAtmosHandler_ResolveWorkDir(t *testing.T) {
 }
 
 func TestAtmosHandler_ResolveEnvVars(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
@@ -232,6 +244,7 @@ func TestAtmosHandler_ResolveEnvVars(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := atmosHandler.resolveEnvVars(tt.step, tt.vars)
 			if tt.expectError {
 				assert.Error(t, err)
@@ -248,11 +261,14 @@ func TestAtmosHandler_ResolveEnvVars(t *testing.T) {
 }
 
 func TestAtmosHandler_PrepareExecution(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
 
 	t.Run("basic preparation", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Type:    "atmos",
@@ -270,6 +286,7 @@ func TestAtmosHandler_PrepareExecution(t *testing.T) {
 	})
 
 	t.Run("full preparation", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:             "test",
 			Type:             "atmos",
@@ -294,6 +311,7 @@ func TestAtmosHandler_PrepareExecution(t *testing.T) {
 	})
 
 	t.Run("command resolution error", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Type:    "atmos",
@@ -307,6 +325,7 @@ func TestAtmosHandler_PrepareExecution(t *testing.T) {
 	})
 
 	t.Run("stack resolution error", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Type:    "atmos",
@@ -324,11 +343,14 @@ func TestAtmosHandler_PrepareExecution(t *testing.T) {
 // TestAtmosHandler_ExecuteResolutionError verifies that Execute surfaces
 // configuration-resolution errors before attempting to re-exec the atmos binary.
 func TestAtmosHandler_ExecuteResolutionError(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	ctx := context.Background()
 
 	t.Run("invalid command template returns error", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Type:    "atmos",
@@ -340,6 +362,7 @@ func TestAtmosHandler_ExecuteResolutionError(t *testing.T) {
 	})
 
 	t.Run("invalid stack template returns error", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "test",
 			Type:    "atmos",
@@ -353,11 +376,14 @@ func TestAtmosHandler_ExecuteResolutionError(t *testing.T) {
 }
 
 func TestAtmosHandler_BuildAtmosResult(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
 
 	t.Run("success result", func(t *testing.T) {
+		t.Parallel()
 		result := atmosHandler.buildAtmosResult("stdout content", "stderr content", nil)
 		assert.Equal(t, "stdout content", result.Value)
 		assert.Equal(t, "stdout content", result.Metadata["stdout"])
@@ -367,6 +393,7 @@ func TestAtmosHandler_BuildAtmosResult(t *testing.T) {
 	})
 
 	t.Run("error result", func(t *testing.T) {
+		t.Parallel()
 		result := atmosHandler.buildAtmosResult("partial stdout", "error message", assert.AnError)
 		assert.Equal(t, "partial stdout", result.Value)
 		assert.Equal(t, "partial stdout", result.Metadata["stdout"])
@@ -376,6 +403,7 @@ func TestAtmosHandler_BuildAtmosResult(t *testing.T) {
 	})
 
 	t.Run("trims stdout on success", func(t *testing.T) {
+		t.Parallel()
 		result := atmosHandler.buildAtmosResult("  output with whitespace  \n", "", nil)
 		assert.Equal(t, "output with whitespace", result.Value)
 		// Raw stdout preserved in metadata.
@@ -390,11 +418,14 @@ func TestAtmosHandler_BuildAtmosResult(t *testing.T) {
 // executable (see TestMain). The sentinel is delivered via the step env, which
 // runAtmosCommand forwards to the subprocess.
 func TestAtmosHandler_Execute_Subprocess(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
 
 	t.Run("success returns trimmed stdout and zero exit code", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "deploy",
 			Command: "terraform plan",
@@ -409,6 +440,7 @@ func TestAtmosHandler_Execute_Subprocess(t *testing.T) {
 	})
 
 	t.Run("stack triggers the stack-flag append branch", func(t *testing.T) {
+		t.Parallel()
 		// Setting Stack exercises the "-s <stack>" append path in
 		// runAtmosCommand. We can't observe the subprocess args here, but the
 		// branch executes and the command must still succeed.
@@ -426,6 +458,7 @@ func TestAtmosHandler_Execute_Subprocess(t *testing.T) {
 	})
 
 	t.Run("failure captures non-zero exit code and stderr", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "deploy",
 			Command: "terraform apply",
@@ -437,9 +470,39 @@ func TestAtmosHandler_Execute_Subprocess(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, 3, result.Metadata["exit_code"])
 		assert.Contains(t, result.Error, "fake-atmos-error")
+		// The failure names the command and the exit code instead of a bare "exit status 3".
+		assert.Equal(t, "atmos terraform apply exited with code 3", err.Error())
+		assert.NotContains(t, err.Error(), "policy")
+		assert.Equal(t, 3, errUtils.GetExitCode(err))
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr, "the underlying exit error stays reachable")
+	})
+
+	t.Run("policy denial is named and keeps its exit code", func(t *testing.T) {
+		t.Parallel()
+		step := &schema.WorkflowStep{
+			Name:    "destroy",
+			Command: "terraform destroy mycomponent",
+			Stack:   "nonprod",
+			Output:  string(OutputModeNone),
+			Env:     map[string]string{"_ATMOS_STEP_FAKE": "deny"},
+		}
+
+		result, err := atmosHandler.Execute(context.Background(), step, NewVariables())
+		require.Error(t, err)
+		assert.Equal(t, "a policy denied atmos terraform destroy mycomponent -s nonprod (exit code 77)", err.Error())
+		assert.Equal(t, errUtils.ExitCodePolicyDenied, errUtils.GetExitCode(err))
+		assert.Equal(t, errUtils.ExitCodePolicyDenied, result.Metadata["exit_code"])
+	})
+
+	t.Run("cancellation is not described as an exit code", func(t *testing.T) {
+		t.Parallel()
+		assert.NoError(t, describeAtmosFailure([]string{"version"}, nil))
+		assert.Equal(t, context.Canceled, describeAtmosFailure([]string{"version"}, context.Canceled))
 	})
 
 	t.Run("invalid command template returns error before execution", func(t *testing.T) {
+		t.Parallel()
 		step := &schema.WorkflowStep{
 			Name:    "deploy",
 			Command: "{{ .steps.invalid.value",
@@ -453,6 +516,8 @@ func TestAtmosHandler_Execute_Subprocess(t *testing.T) {
 // TestAtmosHandler_ExecuteWithWorkflow_Subprocess covers the workflow-aware
 // entry point, which resolves the output mode from the workflow definition.
 func TestAtmosHandler_ExecuteWithWorkflow_Subprocess(t *testing.T) {
+	t.Parallel()
+
 	handler, ok := Get("atmos")
 	require.True(t, ok)
 	atmosHandler := handler.(*AtmosHandler)
@@ -470,4 +535,51 @@ func TestAtmosHandler_ExecuteWithWorkflow_Subprocess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "fake-atmos-output", result.Value)
 	assert.Equal(t, 0, result.Metadata["exit_code"])
+}
+
+// A nested atmos command runs with the profile and identity chosen on the parent's command line,
+// which exist only in the parent's memory until they are forwarded through the environment.
+//
+//nolint:paralleltest // Mutates the process-wide Viper singleton and environment.
+func TestAtmosHandler_ForwardsProfileAndIdentity(t *testing.T) {
+	handler, ok := Get("atmos")
+	require.True(t, ok)
+	atmosHandler := handler.(*AtmosHandler)
+
+	run := func(t *testing.T, env map[string]string) string {
+		t.Helper()
+		env["_ATMOS_STEP_FAKE"] = "echo-selection"
+		step := &schema.WorkflowStep{Name: "show", Command: "describe config", Output: string(OutputModeNone), Env: env}
+		result, err := atmosHandler.Execute(context.Background(), step, NewVariables())
+		require.NoError(t, err)
+		return result.Value
+	}
+
+	t.Setenv("ATMOS_PROFILE", "")
+	require.NoError(t, os.Unsetenv("ATMOS_PROFILE"))
+	t.Setenv("ATMOS_IDENTITY", "")
+	require.NoError(t, os.Unsetenv("ATMOS_IDENTITY"))
+	t.Cleanup(func() {
+		cfg.GlobalViper().Set("profile", nil)
+		cfg.GlobalViper().Set("identity", nil)
+	})
+
+	t.Run("nothing selected forwards nothing", func(t *testing.T) {
+		assert.Equal(t, "|", run(t, map[string]string{}))
+	})
+	t.Run("profiles from the command line", func(t *testing.T) {
+		cfg.GlobalViper().Set("profile", []string{"base", "dev"})
+		defer cfg.GlobalViper().Set("profile", nil)
+		assert.Equal(t, "base,dev|", run(t, map[string]string{}))
+	})
+	t.Run("identity from the command line", func(t *testing.T) {
+		cfg.GlobalViper().Set("identity", "admin")
+		defer cfg.GlobalViper().Set("identity", nil)
+		assert.Equal(t, "|admin", run(t, map[string]string{}))
+	})
+	t.Run("the step's own env wins", func(t *testing.T) {
+		cfg.GlobalViper().Set("profile", []string{"dev"})
+		defer cfg.GlobalViper().Set("profile", nil)
+		assert.Equal(t, "prod|", run(t, map[string]string{"ATMOS_PROFILE": "prod"}))
+	})
 }

@@ -8,7 +8,9 @@ import (
 
 	"github.com/cloudposse/atmos/cmd/internal"
 	"github.com/cloudposse/atmos/cmd/terraform/backend"
+	"github.com/cloudposse/atmos/cmd/terraform/cache"
 	"github.com/cloudposse/atmos/cmd/terraform/generate"
+	"github.com/cloudposse/atmos/cmd/terraform/migrate"
 	"github.com/cloudposse/atmos/cmd/terraform/planfile"
 	"github.com/cloudposse/atmos/cmd/terraform/source"
 	"github.com/cloudposse/atmos/cmd/terraform/workdir"
@@ -54,6 +56,7 @@ func init() {
 
 	// Register as persistent flags (inherited by subcommands).
 	terraformParser.RegisterPersistentFlags(terraformCmd)
+	flags.RegisterComponentCommandFlags(terraformCmd, "terraform")
 
 	// Bind flags to Viper for environment variable support.
 	if err := terraformParser.BindToViper(viper.GetViper()); err != nil {
@@ -72,8 +75,14 @@ func init() {
 	// Add workdir subcommand from the workdir subpackage.
 	terraformCmd.AddCommand(workdir.GetWorkdirCommand())
 
+	// Add cache subcommand from the cache subpackage.
+	terraformCmd.AddCommand(cache.GetCacheCommand())
+
 	// Add planfile subcommand from the planfile subpackage.
 	terraformCmd.AddCommand(planfile.PlanfileCmd)
+
+	// Add migrate subcommand from the migrate subpackage.
+	terraformCmd.AddCommand(migrate.GetCommand(migrate.Options{ParentCommand: terraformCmd, TerraformParser: terraformParser}))
 
 	// Register other completion functions (component args, identity).
 	RegisterTerraformCompletions(terraformCmd)
@@ -81,6 +90,7 @@ func init() {
 	// Register global compat flags for terraform command itself (not just subcommands).
 	// This enables the COMPATIBILITY FLAGS section in help output.
 	internal.RegisterCommandCompatFlags("terraform", "terraform", TerraformGlobalCompatFlags())
+	internal.RegisterCommandCompatFlags("terraform", "migrate", migrate.CompatFlags())
 
 	// Register the flag registry for NoOptDefVal preprocessing in preprocessCompatibilityFlags.
 	// This enables the existing FlagRegistry.PreprocessNoOptDefValArgs to normalize
@@ -88,7 +98,12 @@ func init() {
 	internal.RegisterCommandFlagRegistry("terraform", terraformParser.Registry())
 
 	// Register this command with the registry.
-	internal.Register(&TerraformCommandProvider{})
+	internal.Register(
+		&TerraformCommandProvider{},
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/terraform/usage"),
+		internal.WithExample("examples/quick-start-simple", "Quick Start (Simple)"),
+		internal.WithExample("examples/quick-start-advanced", "Quick Start (Advanced)"),
+	)
 }
 
 // TerraformCommandProvider implements the CommandProvider interface.
@@ -184,6 +199,13 @@ func terraformGlobalFlagsHandler(cmd *cobra.Command, args []string) error {
 
 			// Get the terraform command, with fallback to default.
 			command := atmosConfig.Components.Terraform.Command
+			override, err := flags.ComponentCommand(cmd, "terraform")
+			if err != nil {
+				return err
+			}
+			if override != "" {
+				command = override
+			}
 			if command == "" {
 				command = cfg.TerraformComponentType // Default to "terraform".
 			}

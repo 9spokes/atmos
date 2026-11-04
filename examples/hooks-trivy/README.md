@@ -1,6 +1,19 @@
+---
+title: Trivy Hook
+tags: [Hooks]
+cast:
+  file: /casts/examples/hooks-trivy/security-scan.cast
+  title: atmos Trivy hook
+related_docs:
+  - label: "Terraform plan"
+    url: /cli/commands/terraform/plan
+  - label: "Lifecycle hook configuration"
+    url: /stacks/hooks
+---
+
 # `hooks-trivy`
 
-Demonstrates the **`trivy`** hook kind: a `before-terraform-plan` hook that
+Demonstrates the [**`trivy`** hook kind](https://atmos.tools/stacks/hooks): an `after.terraform.plan` hook that
 runs `trivy config` against the component and renders a SARIF findings
 summary in the terminal.
 

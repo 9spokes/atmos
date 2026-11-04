@@ -19,8 +19,10 @@ import (
 	"github.com/Masterminds/sprig/v3"
 
 	errUtils "github.com/cloudposse/atmos/errors"
+	"github.com/cloudposse/atmos/pkg/function/yamlsource"
 	"github.com/cloudposse/atmos/pkg/perf"
 	atmostmpl "github.com/cloudposse/atmos/pkg/template"
+	"github.com/cloudposse/atmos/pkg/templatefuncs"
 )
 
 // YamlFunctionProcessor is a callback for processing YAML function tags in locals.
@@ -424,7 +426,8 @@ func (r *Resolver) resolveValue(value any, localName string) (any, error) {
 func (r *Resolver) resolveString(strVal, localName string) (any, error) {
 	// Check for YAML function tags (e.g., !terraform.state, !terraform.output).
 	// Process these first before Go template processing.
-	if r.yamlFunctionProcessor != nil && strings.HasPrefix(strVal, "!") {
+	_, tagged := yamlsource.Decode(strVal)
+	if r.yamlFunctionProcessor != nil && (tagged || strings.HasPrefix(strVal, "!")) {
 		result, err := r.yamlFunctionProcessor(strVal)
 		if err != nil {
 			return nil, fmt.Errorf("%w %q in %s: %w", errUtils.ErrLocalsYamlFunctionFailed, localName, r.filePath, err)
@@ -452,8 +455,16 @@ func (r *Resolver) resolveString(strVal, localName string) (any, error) {
 	// Add resolved locals (these take precedence over template context).
 	context["locals"] = r.resolved
 
+	if ref, ok, err := atmostmpl.ExtractPlainFieldRef(strVal); err != nil {
+		return nil, fmt.Errorf("failed to parse template for local %q in %s: %w", localName, r.filePath, err)
+	} else if ok {
+		if value, found := atmostmpl.LookupFieldPath(context, ref.Path); found {
+			return value, nil
+		}
+	}
+
 	// Parse and execute the template.
-	tmpl, err := template.New(localName).Funcs(sprig.FuncMap()).Parse(strVal)
+	tmpl, err := template.New(localName).Funcs(sprig.FuncMap()).Funcs(templatefuncs.FuncMap()).Parse(strVal)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse template for local %q in %s: %w", localName, r.filePath, err)
 	}

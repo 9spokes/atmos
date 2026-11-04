@@ -1,0 +1,61 @@
+commands:
+  - name: format
+    description: Format repository files without staging changes
+    working_directory: !repo-root .
+    commands:
+      - name: staged
+        description: Format staged files using the shared repository suite
+        flags:
+          - name: base-ref
+            type: string
+            default: origin/main
+            description: Base branch or commit for PR comparisons
+          - name: only
+            type: string
+            default: ""
+            description: Comma-separated check IDs (empty selects all applicable checks)
+        steps:
+          - name: repository-checks
+            type: script
+            interpreter: starlark
+            script: |
+              load("scripts/checks/entry.star", "run")
+              run("staged", "format", ctx.flags["base-ref"], ctx.flags["only"])
+
+      - name: pr
+        description: Format pr files using the shared repository suite
+        flags:
+          - name: base-ref
+            type: string
+            default: origin/main
+            description: Base branch or commit for PR comparisons
+          - name: only
+            type: string
+            default: ""
+            description: Comma-separated check IDs (empty selects all applicable checks)
+        steps:
+          - name: repository-checks
+            type: script
+            interpreter: starlark
+            script: |
+              load("scripts/checks/entry.star", "run")
+              run("pr", "format", ctx.flags["base-ref"], ctx.flags["only"])
+
+      - name: all
+        description: Format all files using the shared repository suite
+        flags:
+          - name: base-ref
+            type: string
+            default: origin/main
+            description: Base branch or commit for PR comparisons
+          - name: only
+            type: string
+            default: ""
+            description: Comma-separated check IDs (empty selects all applicable checks)
+        steps:
+          - name: repository-checks
+            type: script
+            interpreter: starlark
+            script: |
+              load("scripts/checks/entry.star", "run")
+              run("all", "format", ctx.flags["base-ref"], ctx.flags["only"])

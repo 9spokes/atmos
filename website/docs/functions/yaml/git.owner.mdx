@@ -13,6 +13,8 @@ import Intro from '@site/src/components/Intro'
     and works for GitHub, GitLab, Bitbucket, and Azure DevOps.
 </Intro>
 
+<YamlFunctionAvailability name="git.owner" />
+
 ## Usage
 
 ```yaml
@@ -37,3 +39,4 @@ vars:
 - [`!git.name`](/functions/yaml/git.name) — the bare repository name
 - [`!git.host`](/functions/yaml/git.host) — the repository host (e.g. `github.com`)
 - [`!git.url`](/functions/yaml/git.url) — the remote URL
+- [`!git.sha`](/functions/yaml/git.sha) — the current commit SHA

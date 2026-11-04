@@ -9,14 +9,16 @@ var (
 defined in your configurations by applying the necessary changes.
 
 Example usage:
-  atmos helmfile apply echo-server -s tenant1-ue2-dev
-  atmos helmfile apply echo-server -s tenant1-ue2-dev --redirect-stderr /dev/stdout`
+
+    $ atmos helmfile apply echo-server -s tenant1-ue2-dev
+    $ atmos helmfile apply echo-server -s tenant1-ue2-dev \\
+        --redirect-stderr /dev/stdout`
 )
 
 // helmfileApplyCmd represents the helmfile apply subcommand.
 var helmfileApplyCmd = &cobra.Command{
 	Use:                "apply",
-	Aliases:            []string{},
+	Aliases:            []string{"deploy"},
 	Short:              helmfileApplyShort,
 	Long:               helmfileApplyLong,
 	FParseErrWhitelist: struct{ UnknownFlags bool }{UnknownFlags: true},

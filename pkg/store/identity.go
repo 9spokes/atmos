@@ -13,6 +13,7 @@ type AWSAuthConfig struct {
 	ConfigFile      string
 	Profile         string
 	Region          string
+	EndpointURL     string
 }
 
 // AzureAuthConfig holds the Azure-specific authentication configuration resolved from an identity.
@@ -35,6 +36,11 @@ type GCPAuthConfig struct {
 	TokenExpiry     time.Time
 }
 
+// EnvironmentAuthConfig holds generic environment credentials resolved from a native identity.
+type EnvironmentAuthConfig struct {
+	Environment map[string]string
+}
+
 // AuthContextResolver resolves an identity name to a cloud-specific auth configuration.
 // Implemented outside this package (in pkg/store/authbridge) to avoid circular deps.
 //
@@ -50,6 +56,26 @@ type AuthContextResolver interface {
 	ResolveGCPAuthContext(ctx context.Context, identityName string) (*GCPAuthConfig, error)
 }
 
+// EnvironmentAuthContextResolver is an optional resolver capability for stores that consume
+// generic environment/v1 credentials from a native Atmos identity.
+type EnvironmentAuthContextResolver interface {
+	AuthContextResolver
+	ResolveEnvironmentAuthContext(ctx context.Context, identityName string) (*EnvironmentAuthConfig, error)
+}
+
+// SecretsAuthContext carries an identity-resolving AuthContextResolver and the effective default
+// identity name to non-store secret backends (e.g. cloud-KMS SOPS providers) that live outside the
+// store registry but need the same identity->credentials resolution. It is populated by the same
+// code paths that inject the store auth resolver (the `atmos secret` command and terraform), so
+// SOPS providers can authenticate KMS calls via an Atmos identity instead of ambient credentials.
+type SecretsAuthContext struct {
+	// Resolver authenticates an identity name and returns cloud-specific credentials.
+	Resolver AuthContextResolver
+	// DefaultIdentity is the effective identity (from --identity/ATMOS_IDENTITY or the stack/component
+	// default) used when a provider does not name its own identity.
+	DefaultIdentity string
+}
+
 // IdentityAwareStore is implemented by stores that support identity-based authentication.
 // Stores that implement this interface can authenticate using Atmos auth identities
 // instead of the default credential chain.
@@ -58,4 +84,7 @@ type IdentityAwareStore interface {
 	// SetAuthContext injects the resolver and identity name so the store can
 	// lazily resolve credentials on first Get/Set call.
 	SetAuthContext(resolver AuthContextResolver, identityName string)
+	// ResetAuthContext clears runtime credentials, the inherited identity, and cached
+	// clients before rebinding a shared store to a different evaluation context.
+	ResetAuthContext()
 }

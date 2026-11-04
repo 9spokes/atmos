@@ -189,7 +189,7 @@ type apiErrorMapping struct {
 var knownAPIErrors = []apiErrorMapping{
 	{
 		patterns: []string{"Function calling is not enabled"},
-		message:  "This model doesn't support function calling (tool use). Please switch to a different model using Ctrl+P. Try gemini-2.5-flash or gemini-1.5-pro.",
+		message:  "This model doesn't support function calling (tool use). Please switch to a different model using Ctrl+P. Try gemini-3.8-flash.",
 	},
 	{
 		patterns: []string{"429", "Too Many Requests", "rate_limit_error"},
@@ -298,6 +298,24 @@ func formatAPIError(err error) string {
 }
 
 // formatToolParameters formats tool call parameters for display in the UI.
+// Bounds a turn-step's rendered label so it fits on a single footer line.
+const stepLabelMaxLen = 60
+
+// formatToolStepLabel builds a short, plain-text "name  args" summary of a tool call for the
+// turn-step log, reusing formatToolParameters but stripping its markdown emphasis (the
+// footer isn't rendered through glamour).
+func formatToolStepLabel(toolCall aiTypes.ToolCall) string {
+	label := toolCall.Name
+	if params := formatToolParameters(toolCall); params != "" {
+		plain := strings.NewReplacer("**", "", "`", "").Replace(params)
+		label = fmt.Sprintf("%s  %s", label, plain)
+	}
+	if len(label) > stepLabelMaxLen {
+		label = label[:stepLabelMaxLen-3] + "..."
+	}
+	return label
+}
+
 func formatToolParameters(toolCall aiTypes.ToolCall) string {
 	if len(toolCall.Input) == 0 {
 		return ""

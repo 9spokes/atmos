@@ -235,7 +235,8 @@ components:
         ansible:
           playbook: <file>   # Playbook file (relative to component directory)
           inventory: <src>   # Inventory source (file, directory, or script)
-        depends_on: []       # Dependency ordering
+      dependencies:
+        components: []       # Dependency ordering
       metadata: {}           # Component behavior and inheritance
       command: ansible       # Override the ansible binary
       hooks: {}              # Lifecycle event handlers
@@ -304,7 +305,7 @@ atmos ansible playbook webserver -s dev -- -vvv
 
 ```shell
 # Verify configuration
-atmos describe component webserver -s prod --type ansible
+atmos describe component webserver -s prod
 
 # Run check mode against production
 atmos ansible playbook webserver -s prod -- --check --diff

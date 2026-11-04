@@ -5,9 +5,13 @@ Execute 'show component' command
 
 USAGE
 
-                                    
-    $ atmos show component [flags]  
-                                    
+
+    $ atmos show component <component> [flags]
+
+
+ARGUMENTS
+
+  component  Name of the component (required)
 
 FLAGS
 
@@ -16,7 +20,7 @@ FLAGS
 
   -h, --help             help for component
 
-      --identity string  Identity to use for authentication (overrides identity in command config)
+  -i, --identity string  Identity to use for authentication (use without value to select interactively)
 
   -s, --stack string     Name of the stack
 
@@ -27,12 +31,25 @@ GLOBAL FLAGS
 
       --base-path string                     Base path for Atmos project
 
+      --cast string                          Record command output as an asciinema cast (--cast for generated path, --
+                                             cast=path with a .cast, .gif, .mp4, .html, .ascii, .png, .jpg, or .jpeg
+                                             extension for explicit output)
+
   -C, --chdir string                         Change working directory before executing the command (run as if Atmos
                                              started in this directory)
 
       --config strings                       Paths to configuration files (comma-separated or repeated flag)
 
       --config-path strings                  Paths to search for Atmos configuration (comma-separated or repeated flag)
+
+      --docs string                          Open command documentation (--docs=md renders it in the terminal)
+
+      --edition string                       Pin defaults to a date-anchored edition (YYYY, YYYY-MM, or YYYY-MM-DD)
+
+      --example                              Select and initialize a related example (prints install commands without
+                                             a terminal)
+
+      --explain                              Explain policy decisions on stderr without changing execution
 
       --force-color                          Force color output even when not a TTY (useful for screenshots)
 
@@ -48,6 +65,12 @@ GLOBAL FLAGS
       --interactive                          Enable interactive prompts for missing required flags, optional value
                                              flags using the sentinel pattern, and missing positional arguments
                                              (requires TTY, disabled in CI) (default true)
+
+      --justification string                 Reason recorded for privileged auth actions such as PIM role activation (--
+                                             justification=REASON)
+
+      --logs-color                           Enable log color when available; --no-color and NO_COLOR always override
+                                             (default true)
 
       --logs-file string                     The file to write Atmos logs to. Logs can be written to any file or any
                                              standard file descriptor, including '/dev/stdout', '/dev/stderr' and
@@ -87,12 +110,11 @@ GLOBAL FLAGS
       --skill strings                        Specify skills for AI analysis context (comma-separated or repeated flag,
                                              requires --ai)
 
-      --skip-hooks string                    Skip lifecycle hooks for this invocation. Use --skip-hooks (no value) to
-                                             skip all, or --skip-hooks=name1,name2 to skip specific hooks by name
-
       --use-version string                   Use a specific version of Atmos (e.g., --use-version=1.160.0)
 
   -v, --verbose                              Enable verbose error output with full context, stack traces, and detailed
                                              information
 
 
+
+  Documentation: https://atmos.tools

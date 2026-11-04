@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cloudposse/atmos/cmd/internal"
+	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/flags"
 	"github.com/cloudposse/atmos/pkg/flags/compat"
 	"github.com/cloudposse/atmos/pkg/schema"
@@ -26,10 +27,23 @@ func isAIEnabled(atmosConfig *schema.AtmosConfiguration) bool {
 	return atmosConfig.AI.Enabled
 }
 
+// errAINotEnabled returns a friendly error explaining how to enable AI features,
+// using the `atmos config set` command.
+func errAINotEnabled() error {
+	return errUtils.Build(errUtils.ErrAINotEnabled).
+		WithHint("Run `atmos config set ai.enabled true`").
+		Err()
+}
+
 func init() {
 	// Register this built-in command with the registry.
 	// This happens during package initialization via blank import.
-	internal.Register(&AICommandProvider{})
+	internal.Register(
+		&AICommandProvider{},
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/ai/usage"),
+		internal.WithExample("examples/ai", "Atmos AI"),
+		internal.WithExample("examples/ai-claude-code", "Claude Code"),
+	)
 }
 
 // AICommandProvider implements the CommandProvider interface.

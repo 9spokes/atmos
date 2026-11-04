@@ -1,13 +1,10 @@
 package terraform
 
 import (
-	"bytes"
-
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/cloudposse/atmos/cmd/internal"
-	e "github.com/cloudposse/atmos/internal/exec"
 	"github.com/cloudposse/atmos/pkg/ansi"
 	"github.com/cloudposse/atmos/pkg/ci"
 	"github.com/cloudposse/atmos/pkg/flags"
@@ -33,7 +30,7 @@ For complete Terraform/OpenTofu documentation, see:
   https://developer.hashicorp.com/terraform/cli/commands/plan
   https://opentofu.org/docs/cli/commands/plan`,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return runHooks(h.BeforeTerraformPlan, cmd, args)
+		return runBeforeHooks(h.BeforeTerraformPlan, cmd, args)
 	},
 	RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 		// Reset per-run globals. Both must be initialised before any early return
@@ -62,8 +59,8 @@ For complete Terraform/OpenTofu documentation, see:
 			return err
 		}
 
-		// Parse base terraform options.
-		opts, err := ParseTerraformRunOptions(v)
+		// Parse base terraform options with command context for UI flag detection.
+		opts, err := ParseTerraformRunOptions(v, cmd)
 		if err != nil {
 			return err
 		}
@@ -78,20 +75,18 @@ For complete Terraform/OpenTofu documentation, see:
 		// CI mode is active when:
 		// 1. --ci flag or ATMOS_CI/CI env var is set, OR
 		// 2. A CI platform is auto-detected (e.g., GITHUB_ACTIONS=true).
-		ciMode, _ := cmd.Flags().GetBool("ci")
-		if !ciMode {
-			ciMode = v.GetBool("ci")
-		}
-		if !ciMode {
-			ciMode = ci.IsCI()
-		}
+		ciMode := ci.ModeEnabled(cmd)
 
-		var shellOpts []e.ShellCommandOption
-		var stdoutBuf, stderrBuf bytes.Buffer
-		if ciMode {
-			shellOpts = append(shellOpts, e.WithStdoutCapture(&stdoutBuf))
-			shellOpts = append(shellOpts, e.WithStderrCapture(&stderrBuf))
+		// component/stack for the exec-metadata Data payload (research.md
+		// Decision 21) — the multi-component --affected/--all path never
+		// reaches captureExecMetadataSync's single-component parser closure
+		// (gated out by its existing info.NodeHooks == nil check), so an
+		// empty component here (no positional arg) is expected, not an error.
+		var execComponent string
+		if len(args) > 0 {
+			execComponent = args[0]
 		}
+		shellOpts, stdoutBuf, stderrBuf := terraformCaptureShellOpts(execComponent, v.GetString("stack"))
 
 		err = terraformRunWithOptions(terraformCmd, cmd, args, opts, shellOpts...)
 
@@ -161,4 +156,8 @@ func init() {
 
 	// Attach to parent terraform command.
 	terraformCmd.AddCommand(planCmd)
+	internal.RegisterCommandMetadata(
+		planCmd,
+		internal.WithDocumentationURL("https://atmos.tools/cli/commands/terraform/plan"),
+	)
 }

@@ -6,10 +6,19 @@ import (
 	"strings"
 	"testing"
 
+	cockroachErrors "github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	atmosErrors "github.com/cloudposse/atmos/errors"
+	"github.com/cloudposse/atmos/pkg/ai/agent/anthropic"
+	"github.com/cloudposse/atmos/pkg/ai/agent/azureopenai"
+	"github.com/cloudposse/atmos/pkg/ai/agent/bedrock"
+	"github.com/cloudposse/atmos/pkg/ai/agent/gemini"
+	"github.com/cloudposse/atmos/pkg/ai/agent/github"
+	"github.com/cloudposse/atmos/pkg/ai/agent/grok"
+	"github.com/cloudposse/atmos/pkg/ai/agent/ollama"
+	"github.com/cloudposse/atmos/pkg/ai/agent/openai"
 	"github.com/cloudposse/atmos/pkg/schema"
 )
 
@@ -61,6 +70,11 @@ func newInputWithSkill(cmd, stdout, stderr string, cmdErr error, skillNames []st
 }
 
 func TestValidateAIConfig(t *testing.T) {
+	// Force PATH to an empty directory so auto-detection of claude/codex/copilot/gemini
+	// CLI binaries never fires here, regardless of what's installed on the machine running
+	// this test. Auto-detection itself is covered separately in pkg/ai/factory_test.go.
+	t.Setenv("PATH", t.TempDir())
+
 	tests := []struct {
 		name        string
 		cfg         *schema.AtmosConfiguration
@@ -133,6 +147,16 @@ func TestValidateAIConfig(t *testing.T) {
 					Providers: map[string]*schema.AIProviderConfig{
 						"anthropic": {Model: "claude-sonnet-4-5-20250514", ApiKey: "sk-test-key"},
 					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "CLI provider skips provider-config and API key requirement",
+			cfg: &schema.AtmosConfiguration{
+				AI: schema.AISettings{
+					Enabled:         true,
+					DefaultProvider: "claude-code",
 				},
 			},
 			wantErr: false,
@@ -543,4 +567,28 @@ func TestTruncateOutput_ExactlyOverLimit(t *testing.T) {
 	assert.LessOrEqual(t, len(result), maxOutputLength, "truncated result must not exceed limit")
 	assert.True(t, strings.HasSuffix(result, "\n... (output truncated)"))
 	assert.True(t, strings.HasPrefix(result, strings.Repeat("x", 100)))
+}
+
+func TestHintModel_MatchesProviderDefaults(t *testing.T) {
+	tests := map[string]string{
+		"anthropic":   anthropic.DefaultModel,
+		"openai":      openai.DefaultModel,
+		"gemini":      gemini.DefaultModel,
+		"bedrock":     bedrock.DefaultModel,
+		"azureopenai": azureopenai.DefaultModel,
+		"ollama":      ollama.DefaultModel,
+		"grok":        grok.DefaultModel,
+		"github":      github.DefaultModel,
+	}
+	for provider, want := range tests {
+		t.Run(provider, func(t *testing.T) {
+			assert.Equal(t, want, hintModel(provider))
+		})
+	}
+}
+
+func TestValidateAIConfig_NotEnabledHintUsesAnthropicDefault(t *testing.T) {
+	err := ValidateAIConfig(&schema.AtmosConfiguration{})
+	require.Error(t, err)
+	assert.Contains(t, strings.Join(cockroachErrors.GetAllHints(err), "\n"), "model: "+anthropic.DefaultModel+"\n")
 }

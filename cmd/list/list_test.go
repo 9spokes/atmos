@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	cfg "github.com/cloudposse/atmos/pkg/config"
 	l "github.com/cloudposse/atmos/pkg/list"
 	"github.com/cloudposse/atmos/pkg/list/errors"
 )
@@ -24,6 +25,17 @@ func setupTestCommand(use string) *cobra.Command {
 	cmd.PersistentFlags().Bool("process-templates", true, "Enable/disable Go template processing")
 	cmd.PersistentFlags().Bool("process-functions", true, "Enable/disable YAML functions processing")
 	return cmd
+}
+
+// TestListCmd_IdentityFlagNoOptDefVal verifies listCmd registers --identity via the shared
+// flags.WithIdentityFlag() builder, so a bare --identity (no value) carries the interactive-
+// selection sentinel instead of failing with "flag needs an argument".
+func TestListCmd_IdentityFlagNoOptDefVal(t *testing.T) {
+	identityFlag := listCmd.PersistentFlags().Lookup("identity")
+	require.NotNil(t, identityFlag, "identity flag should be registered on the list command")
+	assert.Equal(t, cfg.IdentityFlagSelectValue, identityFlag.NoOptDefVal,
+		"bare --identity must carry the select sentinel, matching every other Atmos command")
+	assert.Equal(t, "i", identityFlag.Shorthand)
 }
 
 // TestComponentDefinitionNotFoundError tests that the ComponentDefinitionNotFoundError.
@@ -274,9 +286,9 @@ func TestListCommandProvider(t *testing.T) {
 		assert.Nil(t, provider.GetCompatibilityFlags())
 	})
 
-	t.Run("GetAliases returns vendor and workflow aliases", func(t *testing.T) {
+	t.Run("GetAliases returns vendor, workflow, and stack aliases", func(t *testing.T) {
 		aliases := provider.GetAliases()
-		require.Len(t, aliases, 2)
+		require.Len(t, aliases, 4)
 
 		// Verify vendor list alias.
 		vendorAlias := aliases[0]
@@ -293,5 +305,19 @@ func TestListCommandProvider(t *testing.T) {
 		assert.Equal(t, "list", workflowAlias.Name)
 		assert.Contains(t, workflowAlias.Long, `alias for "atmos list workflows"`)
 		assert.Contains(t, workflowAlias.Example, "atmos workflow list")
+
+		stackAlias := aliases[2]
+		assert.Equal(t, "stacks", stackAlias.Subcommand)
+		assert.Equal(t, "stack", stackAlias.ParentCommand)
+		assert.Equal(t, "list", stackAlias.Name)
+		assert.Contains(t, stackAlias.Long, `alias for "atmos list stacks"`)
+		assert.Contains(t, stackAlias.Example, "atmos stack list")
+
+		instancesAlias := aliases[3]
+		assert.Equal(t, "instances", instancesAlias.Subcommand)
+		assert.Equal(t, "stack", instancesAlias.ParentCommand)
+		assert.Equal(t, "instances", instancesAlias.Name)
+		assert.Contains(t, instancesAlias.Long, `alias for "atmos list instances"`)
+		assert.Contains(t, instancesAlias.Example, "atmos stack instances")
 	})
 }

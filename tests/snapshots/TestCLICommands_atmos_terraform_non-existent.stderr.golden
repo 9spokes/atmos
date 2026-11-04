@@ -1,11 +1,13 @@
-# Incorrect Usage
 
-**Error:** Unknown command non-existent for atmos terraform
+Incorrect Usage
+
+Error: Unknown command non-existent for atmos terraform
 
 Valid subcommands are:
 
   • apply
   • backend
+  • cache
   • clean
   • console
   • deploy
@@ -18,9 +20,11 @@ Valid subcommands are:
   • help
   • import
   • init
+  • lint
   • login
   • logout
   • metadata
+  • migrate
   • modules
   • output
   • plan
@@ -42,12 +46,17 @@ Valid subcommands are:
   • workspace
   • write
 
+## Usage
+
+ atmos terraform [flags]
+ atmos terraform [sub-command] [flags]
+
 ## Usage Examples:
 
 – Execute a terraform subcommand
 
   $ atmos terraform [subcommand] <component-name> -s <stack-name>
 
-## Hints
+💡 Run atmos terraform --help for usage.
 
-💡 https://atmos.tools/cli/commands/terraform/usage
+Documentation: https://atmos.tools/cli/commands/terraform/usage

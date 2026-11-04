@@ -2,6 +2,7 @@ package step
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	errUtils "github.com/cloudposse/atmos/errors"
@@ -12,8 +13,26 @@ import (
 // StepExecutor runs workflow steps using the step registry.
 // This provides a simplified interface for executing steps with variable passing.
 type StepExecutor struct {
-	vars     *Variables
-	workflow *schema.WorkflowDefinition
+	vars        *Variables
+	workflow    *schema.WorkflowDefinition
+	atmosConfig *schema.AtmosConfiguration
+}
+
+type outputSuppressedContextKey struct{}
+
+// WithOutputSuppressed disables transient step UI for this context.
+func WithOutputSuppressed(ctx context.Context) context.Context {
+	defer perf.Track(nil, "step.WithOutputSuppressed")()
+
+	return context.WithValue(ctx, outputSuppressedContextKey{}, struct{}{})
+}
+
+// OutputSuppressed reports whether transient step UI is disabled for ctx.
+func OutputSuppressed(ctx context.Context) bool {
+	defer perf.Track(nil, "step.OutputSuppressed")()
+
+	_, ok := ctx.Value(outputSuppressedContextKey{}).(struct{})
+	return ok
 }
 
 // NewStepExecutor creates a new step executor.
@@ -41,6 +60,22 @@ func (e *StepExecutor) SetWorkflow(workflow *schema.WorkflowDefinition) {
 	e.workflow = workflow
 }
 
+// SetAtmosConfig sets the active Atmos configuration for handlers that need
+// process-level settings.
+func (e *StepExecutor) SetAtmosConfig(config *schema.AtmosConfiguration) {
+	defer perf.Track(nil, "step.StepExecutor.SetAtmosConfig")()
+
+	e.atmosConfig = config
+	e.vars.SetAtmosConfig(config)
+}
+
+// SetOutputWriters routes step subprocess output through component-scoped streams.
+func (e *StepExecutor) SetOutputWriters(writers OutputWriters) {
+	defer perf.Track(nil, "step.StepExecutor.SetOutputWriters")()
+
+	e.vars.OutputWriters = writers
+}
+
 // Variables returns the executor's variable store.
 func (e *StepExecutor) Variables() *Variables {
 	defer perf.Track(nil, "step.StepExecutor.Variables")()
@@ -55,6 +90,12 @@ func (e *StepExecutor) Execute(ctx context.Context, step *schema.WorkflowStep) (
 	// Default step name if not provided.
 	if step.Name == "" {
 		step.Name = "unnamed_step"
+	}
+
+	// A decode problem recorded at load time (for example an unknown `retry:` key) fails the step
+	// instead of letting it run with the key silently ignored.
+	if step.LoadError != nil {
+		return nil, loadErrorWithValidation(step)
 	}
 
 	// Default step type if not provided.
@@ -87,11 +128,14 @@ func (e *StepExecutor) Execute(ctx context.Context, step *schema.WorkflowStep) (
 	}
 
 	if err != nil {
-		return result, err
+		// Keep the failed attempt's output reachable so `retry.conditions` can match it.
+		return result, WithStepOutput(err, result)
 	}
 
 	// Store result for variable access.
-	e.vars.Set(step.Name, result)
+	if err := e.vars.SetWithOutputs(step.Name, result, step.Outputs); err != nil {
+		return result, err
+	}
 
 	return result, nil
 }
@@ -147,6 +191,13 @@ func (e *StepExecutor) SetEnv(key, value string) {
 	e.vars.SetEnv(key, value)
 }
 
+// SetFlag sets a workflow flag for use in templates.
+func (e *StepExecutor) SetFlag(key, value string) {
+	defer perf.Track(nil, "step.StepExecutor.SetFlag")()
+
+	e.vars.SetFlag(key, value)
+}
+
 // IsExtendedStepType checks if a step type is an extended type (not atmos or shell).
 func IsExtendedStepType(stepType string) bool {
 	defer perf.Track(nil, "step.IsExtendedStepType")()
@@ -170,6 +221,10 @@ func IsExtendedStepType(stepType string) bool {
 // ValidateStep validates a step configuration.
 func ValidateStep(step *schema.WorkflowStep) error {
 	defer perf.Track(nil, "step.ValidateStep")()
+
+	if step.LoadError != nil {
+		return loadErrorWithValidation(step)
+	}
 
 	stepType := step.Type
 	if stepType == "" {
@@ -226,4 +281,13 @@ func ValidateWorkflow(workflow *schema.WorkflowDefinition) []error {
 	}
 
 	return errs
+}
+
+// loadErrorWithValidation reports the problem recorded when the step was loaded together with
+// whatever the step's handler finds missing or invalid, so a misspelled required field shows both
+// the unknown field and the missing one.
+func loadErrorWithValidation(step *schema.WorkflowStep) error {
+	cleaned := *step
+	cleaned.LoadError = nil
+	return errors.Join(step.LoadError, ValidateStep(&cleaned))
 }
